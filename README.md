@@ -1,15 +1,15 @@
-# Jobs Analyzer
+# [Jobs Analyzer](https://jobs-analyzer.streamlit.app/)
 
 This project provides insights into job market trends, leveraging data from the JobSpy library and analytics powered by the Gemini Pro API. It's designed to help users understand the demand for various technology skills, geographical job distribution, and more.
 
-## Overview
+## [Overview](https://jobs-analyzer.streamlit.app/)
 
 Jobs Analyzer uses a sophisticated data pipeline to fetch, analyze, and visualize job listing data. Here's how it works:
 
-1. **Data Acquisition**: The data is sourced from the JobSpy library, which aggregates job listings from various platforms.
-2. **Data Analysis**: The analysis is powered by the Gemini Pro API, offering deep insights into the job market trends and skill demands.
-3. **Data Pipeline**: The entire pipeline is run on a free VM provided by Oracle Cloud, ensuring cost-effective scalability.
-4. **Data Storage**: Processed data is stored in a free PostgreSQL instance hosted on NeonDB, optimizing for accessibility and performance.
+1. **Data Acquisition**: The data is sourced from the [JobSpy](https://github.com/Bunsly/JobSpy) library, which aggregates job listings from various platforms.
+2. **Data Analysis**: The analysis is powered by the [Gemini Pro API](https://ai.google.dev/), offering deep insights into the job market trends and skill demands.
+3. **Data Pipeline**: The entire pipeline is run using [Plombery](https://lucafaggianelli.github.io/plombery/) on a free VM provided by Oracle Cloud, ensuring cost-effective scalability.
+4. **Data Storage**: Processed data is stored in a free PostgreSQL instance hosted on [NeonDB](https://neon.tech/), optimizing for accessibility and performance.
 5. **Dashboard**: The results are visualized through a dashboard hosted on Streamlit Cloud, available at [https://jobs-analyzer.streamlit.app/](https://jobs-analyzer.streamlit.app/).
 
 ## Getting Started
