@@ -4,3 +4,4 @@
 src/__pycache__/
 src/config/__pycache__/
 src/connections/__pycache__/
+secrets.toml

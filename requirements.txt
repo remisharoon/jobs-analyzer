@@ -3,3 +3,8 @@ psycopg2-binary
 sqlalchemy
 mmh3
 streamlit
+matplotlib
+seaborn
+plotly
+fuzzywuzzy
+python-Levenshtein
