@@ -39,8 +39,8 @@ def plot_skill_demand(data):
         tooltip=['Skill:N', 'Count:Q']
     ).properties(
         title='Top 20 Technology Skills Demand',
-        width=600,
-        height=400
+        width=800,
+        height=800
     ).configure_axis(
         labelFontSize=12,
         titleFontSize=14
