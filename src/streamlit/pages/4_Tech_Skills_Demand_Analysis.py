@@ -8,6 +8,12 @@ df = load_dataframe()
 df = df[df['desired_tech_skills_inferred'].notna() & (df['desired_tech_skills_inferred'] != '')]
 # Ensure the desired_tech_skills_inferred column is a list; if not, split it
 df['desired_tech_skills_inferred'] = df['desired_tech_skills_inferred'].apply(lambda x: x if isinstance(x, list) else str(x).split(','))
+
+# Normalize skill names: convert to lowercase, strip spaces, and then capitalize
+df['desired_tech_skills_inferred'] = df['desired_tech_skills_inferred'].apply(
+    lambda skills: [skill.lower().strip().capitalize() for skill in skills]
+)
+
 # Explode the DataFrame on the desired_tech_skills_inferred column
 df_exploded = df.explode('desired_tech_skills_inferred')
 
