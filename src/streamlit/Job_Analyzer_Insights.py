@@ -9,7 +9,7 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 st.set_page_config(
     page_title="Job Listings Dashboard",
-    page_icon="🧊",
+    page_icon="🧑🏽‍💻",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
@@ -48,6 +48,10 @@ df = df.sort_values(by='Date Posted', ascending=False)
 
 # Apply this function to your job_url column
 # df['Job URL'] = df['Job URL'].apply(make_clickable)
+
+# Place a button in the sidebar for data refresh
+if st.sidebar.button('Refresh Data'):
+    st.legacy_caching.clear_cache()  # Reload the data
 
 location = st.sidebar.multiselect('Country', options=df['Country'].unique(), default=[])
 if location:
