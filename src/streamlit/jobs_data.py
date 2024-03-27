@@ -6,7 +6,7 @@ connection_string = st.secrets.PostgresDB.connection_string
 conn = create_engine(connection_string)
 
 # @st.cache(allow_output_mutation=True)
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_dataframe(sql='select * from ja_jobs_raw'):
     SQL_Query = pd.read_sql(sql, conn)
     df = pd.DataFrame(SQL_Query)
