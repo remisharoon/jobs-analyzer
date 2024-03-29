@@ -28,7 +28,7 @@ try:
         # site_name=["indeed", "linkedin", "zip_recruiter", "glassdoor"],
         site_name=["indeed", "linkedin", "zip_recruiter"],
         # site_name=["linkedin"],
-        search_term="data engineer",
+        search_term="data",
         location="United Arab Emirates",
         # location="Saudi Arabia",
         results_wanted=30,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)

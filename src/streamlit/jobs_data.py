@@ -12,4 +12,5 @@ def load_dataframe(sql='select * from ja_jobs_raw'):
     df = pd.DataFrame(SQL_Query)
     df['date_posted'] = pd.to_datetime(df['date_posted'],errors='coerce')  # Use 'coerce' to handle any invalid parsing as NaT
     df = df.dropna(subset=['date_posted'])  # Optional: Remove rows where conversion failed
+
     return df

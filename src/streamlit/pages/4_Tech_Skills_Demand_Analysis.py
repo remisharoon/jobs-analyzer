@@ -49,9 +49,12 @@ def plot_skill_demand(data):
     st.altair_chart(chart, use_container_width=True)
 
 
+
+
 def main():
     st.title('Technology Skills Demand Analysis')
     plot_skill_demand(df_exploded)
+
 
 if __name__ == '__main__':
     main()
