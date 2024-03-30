@@ -3,6 +3,7 @@ import pandas as pd
 from jobs_data import load_dataframe
 import sys
 import os
+import altair as alt
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -49,33 +50,63 @@ df = df.sort_values(by='Date Posted', ascending=False)
 # Apply this function to your job_url column
 # df['Job URL'] = df['Job URL'].apply(make_clickable)
 
-# Place a button in the sidebar for data refresh
-if st.sidebar.button('Refresh Data'):
-    st.legacy_caching.clear_cache()  # Reload the data
+with st.sidebar.expander("Filter Options", expanded=True):
+    # Place a button in the sidebar for data refresh
+    if st.sidebar.button('Refresh Data'):
+        st.legacy_caching.clear_cache()  # Reload the data
 
-location = st.sidebar.multiselect('Country', options=df['Country'].unique(), default=[])
-if location:
-    df_filtered = df[df['Country'].isin(location)]
-else:
-    df_filtered = df
+with st.sidebar.expander("Filter Options", expanded=True):
+    location = st.sidebar.multiselect('Country', options=df['Country'].unique(), default=[])
+    if location:
+        df_filtered = df[df['Country'].isin(location)]
+    else:
+        df_filtered = df
+
+
+total_job_listings = len(df)
+
+# Display the KPI
+st.metric(label="Total Job Listings", value=total_job_listings)
+
+col1, col2 = st.columns(2)
+
+# Aggregate job counts by country
+country_counts = df['Country'].value_counts().reset_index()
+country_counts.columns = ['Country', 'Number of Listings']
+
+# Create a bar chart with Altair
+country_chart = alt.Chart(country_counts).mark_bar().encode(
+    x='Number of Listings:Q',
+    y=alt.Y('Country:N', sort='-x'),
+    tooltip=['Country', 'Number of Listings']
+).properties(
+    title="Job Listings by Country",
+    width=600,
+    height=300  # Adjust based on the number of countries
+)
+# with col1:
+st.altair_chart(country_chart, use_container_width=True)
+
+
+# Ensure 'Date Posted' is a datetime type for proper resampling
+df['Date Posted'] = pd.to_datetime(df['Date Posted'])
+
+# Resample and count job listings by month
+time_series = df.resample('M', on='Date Posted').size().reset_index(name='Count')
+
+# Create a line chart with Altair
+time_chart = alt.Chart(time_series).mark_line(point=True).encode(
+    x='Date Posted:T',
+    y='Count:Q',
+    tooltip=['Date Posted:T', 'Count']
+).properties(
+    title="Trend of Job Listings Over Time",
+    width=600,
+    height=300
+)
+
+# with col1:
+st.altair_chart(time_chart, use_container_width=True)
+
 
 st.dataframe(df_filtered, height=600)
-# Now, to display this as an HTML table with clickable links
-# st.write(df_filtered.to_html(escape=False, index=False), unsafe_allow_html=True)
-
-# Applying styling to the DataFrame
-# styled_df = df_filtered.style.set_properties(**{
-#     'background-color': 'black',
-#     'color': 'lime',
-#     'border-color': 'white'
-# })
-#
-# # Convert the styled DataFrame to HTML for display in Streamlit
-# html = styled_df.to_html(escape=False, index=False)
-#
-# # Use Streamlit's markdown to display the HTML with styling, allowing HTML content
-# st.markdown(html, unsafe_allow_html=True)
-
-
-
-# df
