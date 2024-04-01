@@ -65,7 +65,8 @@ sqlQuery = """
                 left outer join (SELECT job_hash, string_agg(desired_tech_skill_standardized, ',') as desired_tech_skills_inferred
 								FROM ja_job_tech_skills
 								where desired_tech_skill_standardized is not null and desired_tech_skill_standardized != 'TO_BE_DECIDED'
-								GROUP BY job_hash) tss on jr.job_hash = tss.job_hash;
+								GROUP BY job_hash) tss on jr.job_hash = tss.job_hash
+								where site = 'linkedin';
                 """
 
 
