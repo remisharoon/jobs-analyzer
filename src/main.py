@@ -26,16 +26,28 @@ engine = get_neon_engine()
 try:
     jobs: pd.DataFrame = scrape_jobs(
         # site_name=["indeed", "linkedin", "zip_recruiter", "glassdoor"],
-        site_name=["indeed", "linkedin", "zip_recruiter"],
-        # site_name=["linkedin"],
+        # site_name=["indeed", "linkedin", "zip_recruiter"],
+        site_name=["linkedin"],
         search_term="data",
         location="United Arab Emirates",
         # location="Saudi Arabia",
-        results_wanted=30,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
+        results_wanted=40,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
+        hours_old=72,
         country_indeed="united arab emirates",
         # proxy="http://jobspy:5a4vpWtj8EeJ2hoYzk@ca.smartproxy.com:20001",
         linkedin_fetch_description=True,
     )
+
+    print(jobs.describe())
+    print(jobs['date_posted'])
+
+    # Ensure date_posted is in datetime format
+    jobs['date_posted'] = pd.to_datetime(jobs['date_posted'])
+
+    # Populate null date_posted with current date
+    jobs['date_posted'] = jobs['date_posted'].fillna(pd.Timestamp.now().normalize())
+
+    print(jobs['date_posted'])
 
     jobs['job_hash'] = jobs['job_url'].apply(hash_url)
 
@@ -56,6 +68,8 @@ try:
 
     # 1: output to console
     print(jobs)
+    print(jobs.info())
+    print(jobs['date_posted'])
 
     # 2: output to .csv
     jobs.to_csv("./jobs.csv", index=False)
@@ -179,6 +193,8 @@ try:
                 try_count += 1
                 retry_delay *= 2
 
+    print(jobs['date_posted'])
+    print(jobs.info())
     # 2: output to .csv
     jobs.to_csv("./jobs_enriched.csv", index=False)
     print("outputted to jobs.csv")
@@ -190,6 +206,7 @@ try:
     while try_count < 5:
         try:
             jobs.to_sql(name=table_name,con=engine, if_exists='append',index=False)
+            print("inserted to db")
             break
         except Exception as e:
             print(e)

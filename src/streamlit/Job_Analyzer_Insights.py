@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 st.set_page_config(
     page_title="Job Listings Dashboard",
-    page_icon="🧑🏽‍💻",
+    page_icon="./assets/images/appiconset/16.png",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
