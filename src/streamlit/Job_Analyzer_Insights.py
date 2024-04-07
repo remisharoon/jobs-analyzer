@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 st.set_page_config(
     page_title="Job Listings Dashboard",
-    page_icon="./assets/images/appiconset/16.png",
+    page_icon="https://github.com/remisharoon/jobs-analyzer/blob/aa3dcc878cb31e0632d7e75b7b9a00cbd6cd952a/src/streamlit/assets/images/appiconset/32.png",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
