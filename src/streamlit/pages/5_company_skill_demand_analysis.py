@@ -67,7 +67,7 @@ def display_companies_for_top_skills_1(data, top_n=5):
             st.write(company_counts)
 
 
-def display_companies_for_top_skills(data, top_n=5):
+def display_companies_for_top_skills_2(data, top_n=5):
     skill_counts = data['desired_tech_skills_inferred'].value_counts().head(top_n).reset_index()
     skill_counts.columns = ['Skill', 'Count']
 
@@ -81,6 +81,35 @@ def display_companies_for_top_skills(data, top_n=5):
             company_counts = skill_df['company'].value_counts().reset_index()
             company_counts.columns = ['Company', 'Job Listings']
             st.write(company_counts)
+
+
+def display_companies_for_top_skills(data, top_n=5):
+    skill_counts = data['desired_tech_skills_inferred'].value_counts().head(top_n).reset_index()
+    skill_counts.columns = ['Skill', 'Count']
+
+    st.subheader(f'Companies Hiring for Top {top_n} Skills')
+
+    tab_list = st.tabs([f"{skill}" for skill in skill_counts['Skill']])
+
+    for tab, skill in zip(tab_list, skill_counts['Skill']):
+        with tab:
+            skill_df = data[data['desired_tech_skills_inferred'] == skill]
+
+            # Aggregating job listings by company and concatenating unique job titles
+            company_aggregated = skill_df.groupby('company').agg({
+                'job_hash': 'count',  # Count the number of job listings
+                'job_title_inferred': lambda x: ', '.join(x.unique())  # Concatenate unique job titles into a comma-separated string
+            }).reset_index()
+            company_aggregated.columns = ['Company', 'Job Listings', 'Job Titles']
+
+            # Sorting the aggregated data by 'Job Listings' in descending order
+            company_aggregated = company_aggregated.sort_values(by='Job Listings', ascending=False)
+
+            # Display the data in a Streamlit table
+            # st.write(company_aggregated)
+
+            # Display the sorted data in a Streamlit dataframe with full width
+            st.dataframe(company_aggregated, width=None)  # Setting width=None ensures it takes the full width available
 
 
 def main():
