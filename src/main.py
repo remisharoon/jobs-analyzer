@@ -31,8 +31,8 @@ try:
         search_term="data",
         location="United Arab Emirates",
         # location="Saudi Arabia",
-        results_wanted=40,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
-        hours_old=72,
+        results_wanted=20,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
+        hours_old=48,
         country_indeed="united arab emirates",
         # proxy="http://jobspy:5a4vpWtj8EeJ2hoYzk@ca.smartproxy.com:20001",
         linkedin_fetch_description=True,

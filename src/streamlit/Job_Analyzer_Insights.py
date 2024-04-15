@@ -9,7 +9,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 st.set_page_config(
-    page_title="Job Listings Dashboard",
+    page_title="Data Job Listings Dashboard",
     page_icon="https://github.com/remisharoon/jobs-analyzer/blob/aa3dcc878cb31e0632d7e75b7b9a00cbd6cd952a/src/streamlit/assets/images/appiconset/32.png",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -50,23 +50,23 @@ df = df.sort_values(by='Date Posted', ascending=False)
 # Apply this function to your job_url column
 # df['Job URL'] = df['Job URL'].apply(make_clickable)
 
-with st.sidebar.expander("Filter Options", expanded=True):
-    # Place a button in the sidebar for data refresh
-    if st.sidebar.button('Refresh Data'):
-        st.legacy_caching.clear_cache()  # Reload the data
-
-with st.sidebar.expander("Filter Options", expanded=True):
-    location = st.sidebar.multiselect('Country', options=df['Country'].unique(), default=[])
-    if location:
-        df_filtered = df[df['Country'].isin(location)]
-    else:
-        df_filtered = df
+# with st.sidebar.expander("Filter Options", expanded=True):
+#     # Place a button in the sidebar for data refresh
+#     if st.sidebar.button('Refresh Data'):
+#         st.legacy_caching.clear_cache()  # Reload the data
+#
+# with st.sidebar.expander("Filter Options", expanded=True):
+#     location = st.sidebar.multiselect('Country', options=df['Country'].unique(), default=[])
+#     if location:
+#         df_filtered = df[df['Country'].isin(location)]
+#     else:
+#         df_filtered = df
 
 
 total_job_listings = len(df)
 
 # Display the KPI
-st.metric(label="Total Job Listings", value=total_job_listings)
+st.metric(label="Total Data Job Listed", value=total_job_listings)
 
 col1, col2 = st.columns(2)
 
@@ -109,4 +109,4 @@ time_chart = alt.Chart(time_series).mark_line(point=True).encode(
 st.altair_chart(time_chart, use_container_width=True)
 
 
-st.dataframe(df_filtered, height=600)
+st.dataframe(df, height=600)
