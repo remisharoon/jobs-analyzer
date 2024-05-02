@@ -8,3 +8,4 @@ seaborn
 plotly
 fuzzywuzzy
 python-Levenshtein
+streamlit-aggrid
