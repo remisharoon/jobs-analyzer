@@ -6,8 +6,18 @@ import os
 import altair as alt
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-from sqlalchemy import create_engine, MetaData, Table, Column, String
+from sqlalchemy import create_engine, MetaData, Table, Column, String, DateTime
+import re
+from datetime import datetime
 
+# Regular expression for validating an Email
+email_regex = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+
+def validate_email(email):
+    """Validate the email address using a regular expression."""
+    if re.match(email_regex, email):
+        return True
+    return False
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
@@ -22,23 +32,14 @@ metadata = MetaData()
 # Define the table
 ja_job_alerts_subscriptions = Table(
     'ja_job_alerts_subscriptions', metadata,
-    Column('email', String, primary_key=True),
+    Column('email', String),
     Column('country', String),
-    Column('job_title', String)
+    Column('job_title', String),
+    Column('insert_timestamp', DateTime),
 )
 
 # Create the table if it doesn't exist
 metadata.create_all(engine)
-
-with engine.connect() as connection:
-    # Example insert statement - Replace with actual data handling
-    # insert_statement = ja_job_alerts_subscriptions.insert().values(
-    #     email=email, country=each_country, job_title=each_title
-    # )
-    insert_statement = ja_job_alerts_subscriptions.insert().values(
-        email="email0", country="each_country0", job_title="each_title0"
-    )
-    connection.execute(insert_statement)
 
 st.set_page_config(
     page_title="Data Job Listings Dashboard",
@@ -93,37 +94,38 @@ col4.metric(label="Data Analyst Jobs", value=data_analyst_count)
 
 
 # Using markdown to add a visual divider
-st.markdown("---")
+# st.markdown("---")
 # st.markdown("### Subscribe to Job Alerts")
 
 # Using columns to center the button more effectively
 col1, col2, col3 = st.columns([1, 3, 1])
+
 with col2:
-    if st.button("🌟🌟🌟🌟🌟  Subscribe To My Data Job Alerts Now!  🌟🌟🌟🌟🌟"):
+    with st.expander("🌟🌟🌟🌟🌟  Subscribe To My Data Job Alerts Now!  🌟🌟🌟🌟🌟"):
         with st.form(key='subscribe_form'):
             email = st.text_input("Email")
-            country = st.multiselect("Country", options=["UAE", "Saudi", "Qatar", "Others"])
-            job_title = st.multiselect("Desired Job Title", options=["Data Engineer", "Data Scientist", "Data Analyst"])
+            country = st.multiselect("Country", options=["United Arab Emirates", "Saudi Arabia", "Qatar", "Oman", "Kuwait", "Bahrain"])
+            job_title = st.multiselect("Desired Job Title", options=["Data Engineer", "Data Analyst", "Data Architect", "Data Scientist"])
             submit_button = st.form_submit_button("Submit")
-
             if submit_button:
-
-                # Logic to save data to the database
-                for each_country in country:
-                    for each_title in job_title:
-                        with engine.connect() as connection:
-                            # Example insert statement - Replace with actual data handling
-                            # insert_statement = ja_job_alerts_subscriptions.insert().values(
-                            #     email=email, country=each_country, job_title=each_title
-                            # )
-                            insert_statement = ja_job_alerts_subscriptions.insert().values(
-                                email="email", country="each_country", job_title="each_title"
-                            )
-                            connection.execute(insert_statement)
-                st.success("Subscribed successfully!")
+                if not validate_email(email):
+                    st.error("Invalid email format. Please enter a valid email address.")
+                else:
+                    # Logic to save data to the database
+                    for each_country in country:
+                        for each_title in job_title:
+                            try:
+                                with engine.begin() as connection:
+                                    insert_statement = ja_job_alerts_subscriptions.insert().values(
+                                        email=email, country=each_country, job_title=each_title, insert_timestamp=datetime.now()
+                                    )
+                                    connection.execute(insert_statement)
+                            except Exception as e:
+                                print("Failed to insert data:", e)
+                    st.success(f"{email} Subscribed successfully For {country} And {job_title} Job Alerts!", icon="✅")
 
 # Another markdown divider for neatness
-st.markdown("---")
+# st.markdown("---")
 
 # Aggregate job counts by country
 country_counts = df['Country'].value_counts().reset_index()
