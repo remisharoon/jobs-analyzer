@@ -43,7 +43,7 @@ metadata.create_all(engine)
 
 st.set_page_config(
     page_title="Data Job Listings Dashboard",
-    page_icon="https://github.com/remisharoon/jobs-analyzer/blob/aa3dcc878cb31e0632d7e75b7b9a00cbd6cd952a/src/streamlit/assets/images/appiconset/32.png",
+    page_icon=":bar_chart:",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
