@@ -4,7 +4,7 @@ import pandas as pd
 
 
 sqlQuery = """
-				SELECT 
+				SELECT distinct
                   site, 
                   job_url, 
                   job_url_direct, 
@@ -59,7 +59,7 @@ sqlQuery = """
                   "company industry" 
                 FROM 
                   ja_jobs_raw jr 
-                left outer join ja_country_names_std_mapping jcm on jr.country_inferred = jcm.source_value
+                left outer join ja_country_names_std_mapping jcm on trim(jr.country_inferred) = jcm.source_value
                 left outer join (SELECT job_hash, string_agg(desired_tech_skill_standardized, ',') as desired_tech_skills_inferred
 								FROM ja_job_tech_skills
 								where desired_tech_skill_standardized is not null and desired_tech_skill_standardized != 'TO_BE_DECIDED'
