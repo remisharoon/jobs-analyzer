@@ -28,12 +28,14 @@ try:
         # site_name=["indeed", "linkedin", "zip_recruiter", "glassdoor"],
         # site_name=["indeed", "linkedin", "zip_recruiter"],
         site_name=["linkedin"],
-        search_term="data",
-        location="United Arab Emirates",
+        search_term="Data Engineer",
+        # location="United Arab Emirates",
         # location="Saudi Arabia",
+        location="Middle East",
         results_wanted=20,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
         hours_old=48,
-        country_indeed="united arab emirates",
+        # country_indeed="united arab emirates",
+        country_indeed="worldwide",
         # proxy="http://jobspy:5a4vpWtj8EeJ2hoYzk@ca.smartproxy.com:20001",
         linkedin_fetch_description=True,
     )

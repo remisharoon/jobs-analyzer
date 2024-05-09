@@ -88,9 +88,9 @@ data_analyst_count = len(df[df['Title'].str.contains("analyst", case=False)])
 # Display the KPIs
 col1, col2, col3, col4 = st.columns(4)
 col1.metric(label="Total Data Job Listed", value=total_job_listings)
-col2.metric(label="Data Engineer Jobs", value=data_engineer_count)
+col2.metric(label="Data Engineering Jobs", value=data_engineer_count)
 col3.metric(label="Data Science Jobs", value=data_science_count)
-col4.metric(label="Data Analyst Jobs", value=data_analyst_count)
+col4.metric(label="Data Analysis Jobs", value=data_analyst_count)
 
 
 # Using markdown to add a visual divider
