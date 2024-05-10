@@ -70,6 +70,17 @@ sqlQuery = """
                 """
 
 
+
+def filter_invalid_records(df):
+
+    # Filter out listings where the country is 'None'
+    df = df[df['Country'].notnull() & (df['Country'] != 'None')]
+    
+    # Filter invalid job titles
+    df = df[df['job_title_inferred'].notnull() & (df['job_title_inferred'] != 'None') & (df['job_title_inferred'] != 'Other')]
+
+    return df
+
 # @st.cache(allow_output_mutation=True)
 @st.cache_data(ttl=3600)
 def load_dataframe(sql=sqlQuery):
@@ -81,4 +92,6 @@ def load_dataframe(sql=sqlQuery):
                                        errors='coerce')  # Use 'coerce' to handle any invalid parsing as NaT
     df = df.dropna(subset=['date_posted'])  # Optional: Remove rows where conversion failed
     engine.dispose()
+
+    df = filter_invalid_records(df)
     return df
