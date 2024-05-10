@@ -74,8 +74,8 @@ sqlQuery = """
 def filter_invalid_records(df):
 
     # Filter out listings where the country is 'None'
-    df = df[df['Country'].notnull() & (df['Country'] != 'None')]
-    
+    df = df[df['country_inferred'].notnull() & (df['country_inferred'] != 'None')]
+
     # Filter invalid job titles
     df = df[df['job_title_inferred'].notnull() & (df['job_title_inferred'] != 'None') & (df['job_title_inferred'] != 'Other')]
 
