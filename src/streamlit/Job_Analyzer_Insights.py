@@ -127,6 +127,9 @@ with col2:
 # Another markdown divider for neatness
 # st.markdown("---")
 
+# Filter out listings where the country is 'None'
+df = df[df['Country'].notnull() & (df['Country'] != 'None')]
+
 # Aggregate job counts by country
 country_counts = df['Country'].value_counts().reset_index()
 country_counts.columns = ['Country', 'Number of Listings']

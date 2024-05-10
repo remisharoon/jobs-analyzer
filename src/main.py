@@ -28,10 +28,10 @@ try:
         # site_name=["indeed", "linkedin", "zip_recruiter", "glassdoor"],
         # site_name=["indeed", "linkedin", "zip_recruiter"],
         site_name=["linkedin"],
-        search_term="Data Engineer",
-        # location="United Arab Emirates",
+        search_term=' "Data Analyst" OR "Data Engineer" OR "Data Scientist" OR "Machine Learning" OR "AI Engineer" OR "Data Architect" ',
+        location="United Arab Emirates",
         # location="Saudi Arabia",
-        location="Middle East",
+        # location="Middle East",
         results_wanted=20,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
         hours_old=48,
         # country_indeed="united arab emirates",
@@ -41,7 +41,7 @@ try:
     )
 
     print(jobs.describe())
-    print(jobs['date_posted'])
+    print(jobs['date_posted'], jobs['title'], jobs['location'])
 
     # Ensure date_posted is in datetime format
     jobs['date_posted'] = pd.to_datetime(jobs['date_posted'])
