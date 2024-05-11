@@ -66,14 +66,6 @@ sqlQuery = """
 								where desired_tech_skill_standardized is not null and desired_tech_skill_standardized != 'TO_BE_DECIDED'
 								GROUP BY job_hash) tss on jr.job_hash = tss.job_hash
 								where site = 'linkedin'
-								AND (
-										LOWER(title) LIKE '%data%'
-									OR	LOWER(title) LIKE '%machine%learning%'
-									OR	LOWER(title) LIKE '%artificial%intelligence%'
-									OR	LOWER(title) LIKE '% m%l %'
-									OR	LOWER(title) LIKE '% a%i %'
-									)
-								AND LOWER(title) NOT LIKE '%data%entry%'
 								and is_deleted = 'N';
                 """
 
