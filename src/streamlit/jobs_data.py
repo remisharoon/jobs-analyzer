@@ -66,6 +66,8 @@ sqlQuery = """
 								where desired_tech_skill_standardized is not null and desired_tech_skill_standardized != 'TO_BE_DECIDED'
 								GROUP BY job_hash) tss on jr.job_hash = tss.job_hash
 								where site = 'linkedin'
+								AND LOWER(title) SIMILAR TO '%(^|[^a-z])(a[[:space:]]*i|ml|m[[:space:]]*l|data|ai|machine[[:space:]]*learning|deep[[:space:]]*learning|artificial[[:space:]]*intelligence)($|[^a-z])%'
+								AND LOWER(title) NOT SIMILAR TO '%(^|[^a-z])data[[:space:]]*entry($|[^a-z])%'
 								and is_deleted = 'N';
                 """
 
