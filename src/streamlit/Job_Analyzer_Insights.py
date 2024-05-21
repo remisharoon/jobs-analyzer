@@ -82,8 +82,8 @@ df = df.sort_values(by='Date Posted', ascending=False)
 # Calculate total job listings and listings by job title
 total_job_listings = len(df)
 data_engineer_count = len(df[df['Title'].str.contains("engineer", case=False)])
-data_science_count = len(df[df['Title'].str.contains("science", case=False)])
-data_analyst_count = len(df[df['Title'].str.contains("analyst", case=False)])
+data_science_count = len(df[df['Title'].str.contains("scien", case=False)])
+data_analyst_count = len(df[df['Title'].str.contains("analys", case=False)])
 
 # Display the KPIs
 col1, col2, col3, col4 = st.columns(4)

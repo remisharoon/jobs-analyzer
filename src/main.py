@@ -28,15 +28,16 @@ try:
         # site_name=["indeed", "linkedin", "zip_recruiter", "glassdoor"],
         # site_name=["indeed", "linkedin", "zip_recruiter"],
         site_name=["linkedin"],
-        search_term=' "Data Engineer" ',
+        # search_term=' "Data Engineer" ',
+        search_term=' Data Engineer OR Data Analyst OR Data Scientist OR Machine Learning OR AI Engineer OR Data Architect ',
         # location="United Arab Emirates",
-        # location="Saudi Arabia",
-        location="Qatar",
-        results_wanted=40,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
+        location="Saudi Arabia",
+        # location="Qatar",
+        results_wanted=100,  # be wary the higher it is, the more likey you'll get blocked (rotating proxy can help tho)
         hours_old=240,
         # country_indeed="united arab emirates",
-        # country_indeed="saudi arabia",
-        country_indeed="qatar",
+        country_indeed="saudi arabia",
+        # country_indeed="qatar",
         # proxy="http://jobspy:5a4vpWtj8EeJ2hoYzk@ca.smartproxy.com:20001",
         linkedin_fetch_description=True,
     )
@@ -130,13 +131,13 @@ try:
                 response = requests.post(url, json=payload, headers=headers, params=params)
                 if response.status_code == 200:
                     result = response.json()
-                    # print(result)
+                    print(result)
                     result_json_str = result['candidates'][0]['content']['parts'][0]['text']
-                    # print(result_json_str)
+                    print(result_json_str)
                     result_json_str = result_json_str.lstrip("```").rstrip("```")
-                    # print(result_json_str)
+                    print(result_json_str)
                     result_dict = json.loads(result_json_str)
-                    # print(result_dict)
+                    print(result_dict)
                     end_time = time.time()  # End timing
                     print(f"get time: {end_time - start_time} seconds")
 
