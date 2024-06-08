@@ -1,3 +1,4 @@
+*.db
 *.ini
 *.csv
 .idea/

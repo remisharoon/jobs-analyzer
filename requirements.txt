@@ -10,3 +10,4 @@ fuzzywuzzy
 python-Levenshtein
 streamlit-aggrid
 wordcloud
+plombery
