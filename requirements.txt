@@ -11,3 +11,5 @@ python-Levenshtein
 streamlit-aggrid
 wordcloud
 plombery
+requests-html
+lxml[html_clean]

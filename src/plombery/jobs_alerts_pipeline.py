@@ -22,7 +22,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
 from sqlalchemy import text
-from src.config import read_config
+from config import read_config
 
 # Set up the API request
 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"

@@ -6,3 +6,9 @@ src/__pycache__/
 src/config/__pycache__/
 src/connections/__pycache__/
 secrets.toml
+src/plombery/.data/
+src/plombery/__pycache__/
+src/plombery/config/__pycache__/
+src/plombery/utils/__pycache__/
+src/query_test.py
+src/streamlit/__pycache__/

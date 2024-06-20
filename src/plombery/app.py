@@ -1,5 +1,4 @@
-from plombery import get_app  # noqa: F401
-
+# from plombery import get_app  # noqa: F401
 import jobs_scrape_pipeline, jobs_alerts_pipeline, standardization_pipeline
 
 

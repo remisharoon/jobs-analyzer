@@ -1,7 +1,7 @@
 import requests
 import time
 import json
-from src.config import read_config
+from config import read_config
 
 # Set up the API request
 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"

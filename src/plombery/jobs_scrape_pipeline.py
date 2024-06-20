@@ -3,7 +3,7 @@ from datetime import datetime
 import enum
 from typing import Optional
 from dateutil import tz
-
+from requests_html import HTMLSession
 from apscheduler.triggers.interval import IntervalTrigger
 
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ from jobspy import scrape_jobs
 import pandas as pd
 from sqlalchemy import create_engine, MetaData, Table, select
 import urllib.request
-from src.config import read_config
+from config import read_config
 
 class InputParams(BaseModel):
     """Showcase all the available input types in Plombery"""
@@ -78,6 +78,7 @@ def get_raw_data() -> pd.DataFrame:
 
     # Choose location based on the current segment
     location = locations[segment % len(locations)]
+    location = locations[0]
     country_indeed = country_indeed_mapping[location]
 
     try:
@@ -274,14 +275,17 @@ async def ai_infer_raw_data():
 
 @task
 async def load_jobs_analyzer_site():
-    print("load_jobs_analyzer_site")
-    # contents = urllib.request.urlopen("https://jobs-analyzer.streamlit.app/").read()
-    # print(contents)
+    print("Loading Jobs Analyzer site...")
     try:
-        response = requests.get("https://jobs-analyzer.streamlit.app/", allow_redirects=True)
-        contents = response.content
-        print(contents)
-    except requests.exceptions.RequestException as e:
+        session = HTMLSession()
+        response = session.get("https://jobs-analyzer.streamlit.app/")
+
+        # Render the JavaScript. The timeout can be adjusted or removed.
+        response.html.render(timeout=20)
+
+        print("Page loaded successfully!")
+        session.close()
+    except Exception as e:
         print(f"Error: {e}")
 
 register_pipeline(

@@ -23,7 +23,7 @@ from email.mime.multipart import MIMEMultipart
 import smtplib
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from src.config import read_config
+from config import read_config
 
 
 def _get_engine():
