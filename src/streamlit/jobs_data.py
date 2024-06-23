@@ -65,8 +65,9 @@ sqlQuery = """
 								FROM ja_job_tech_skills
 								where desired_tech_skill_standardized is not null and desired_tech_skill_standardized != 'TO_BE_DECIDED'
 								GROUP BY job_hash) tss on jr.job_hash = tss.job_hash
-								where site = 'linkedin'
-								and is_deleted = 'N';
+                where site = 'linkedin'
+                and jcm.target_value in ('United Arab Emirates','Saudi Arabia','Qatar','Oman','Kuwait','Bahrain')
+                and is_deleted = 'N';
                 """
 
 
