@@ -4,6 +4,8 @@ import enum
 from typing import Optional
 from dateutil import tz
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+
 from pydantic import BaseModel, Field
 from plombery import register_pipeline, task, Trigger, get_logger
 import random
@@ -154,8 +156,8 @@ register_pipeline(
             name="Daily1",
             description="Run the pipeline 1 times daily",
             params=InputParams(),
-            schedule=IntervalTrigger(
-                hours=24,
+            schedule=CronTrigger(
+                hour="7", minute="45", timezone="Asia/Dubai"
             ),
         )
     ],
