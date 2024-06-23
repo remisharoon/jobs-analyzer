@@ -98,7 +98,7 @@ col4.metric(label="Data Analysis Jobs", value=data_analyst_count)
 # st.markdown("### Subscribe to Job Alerts")
 
 # Using columns to center the button more effectively
-col1, col2, col3 = st.columns([1, 3, 1])
+col1, col2 = st.columns([1, 3])
 
 with col2:
     with st.expander("🌟🌟🌟🌟🌟  Subscribe To My Data Job Alerts Now!  🌟🌟🌟🌟🌟"):
@@ -138,12 +138,28 @@ country_chart = alt.Chart(country_counts).mark_bar().encode(
     y=alt.Y('Country:N', sort='-x'),
     tooltip=['Country', 'Number of Listings']
 ).properties(
-    title="Job Listings by Country",
+    # title="Job Listings by Country",
     width=600,
     height=300  # Adjust based on the number of countries
 )
-# with col1:
-st.altair_chart(country_chart, use_container_width=True)
+
+
+# Pie Chart
+pie_chart = alt.Chart(country_counts).mark_arc().encode(
+    theta=alt.Theta(field="Number of Listings", type="quantitative"),
+    color=alt.Color(field="Country", type="nominal", legend=None),
+    tooltip=['Country', 'Number of Listings']
+).properties(
+    title='Job Listings by Country'
+)
+
+
+with col1:
+    st.altair_chart(pie_chart, use_container_width=True)
+
+with col2:
+    st.altair_chart(country_chart, use_container_width=True)
+
 
 
 # Ensure 'Date Posted' is a datetime type for proper resampling
