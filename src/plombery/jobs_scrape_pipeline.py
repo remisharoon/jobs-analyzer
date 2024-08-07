@@ -32,17 +32,24 @@ class InputParams(BaseModel):
     """Showcase all the available input types in Plombery"""
 
 
-locations = ["United Arab Emirates", "Saudi Arabia", "Qatar", "Oman", "Kuwait", "Bahrain", "Turkey", "Malaysia"]
+# locations = ["United Arab Emirates", "Saudi Arabia", "Qatar", "Oman", "Kuwait", "Bahrain", "Turkey", "Malaysia"]
+locations = ["United Arab Emirates", "Saudi Arabia", "Qatar"]
 # Map location to the country name used in 'indeed'
+# country_indeed_mapping = {
+#     "United Arab Emirates": "united arab emirates",
+#     "Saudi Arabia": "saudi arabia",
+#     "Qatar": "qatar",
+#     "Oman": "oman",
+#     "Kuwait": "kuwait",
+#     "Bahrain": "bahrain",
+#     "Turkey": "turkey",
+#     "Malaysia": "malaysia"
+# }
+
 country_indeed_mapping = {
     "United Arab Emirates": "united arab emirates",
     "Saudi Arabia": "saudi arabia",
-    "Qatar": "qatar",
-    "Oman": "oman",
-    "Kuwait": "kuwait",
-    "Bahrain": "bahrain",
-    "Turkey": "turkey",
-    "Malaysia": "malaysia"
+    "Qatar": "qatar"
 }
 
 
@@ -82,7 +89,7 @@ def get_raw_data() -> pd.DataFrame:
     current_hour = datetime.now().hour
 
     # Divide the day into 8 segments (24 hours / 8 segments = 3 hours per segment)
-    segment = current_hour // 3
+    segment = current_hour // 8
 
     # Choose location based on the current segment
     location = locations[segment % len(locations)]

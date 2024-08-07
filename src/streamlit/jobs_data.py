@@ -83,7 +83,7 @@ def filter_invalid_records(df):
     return df
 
 # @st.cache(allow_output_mutation=True)
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def load_dataframe(sql=sqlQuery):
     connection_string = st.secrets.PostgresDB.connection_string
     engine = create_engine(connection_string)
