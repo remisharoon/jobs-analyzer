@@ -13,3 +13,4 @@ wordcloud
 plombery
 requests-html
 lxml[html_clean]
+marimo
