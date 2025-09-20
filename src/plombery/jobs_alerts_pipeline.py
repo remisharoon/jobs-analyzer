@@ -31,7 +31,9 @@ url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:genera
 
 # params = {'key': 'your_api_key'}  # Replace 'your_api_key' with the actual API key
 gemini_config = read_config()['GeminiPro']
-API_KEY = gemini_config['API_KEY']
+# API_KEY = gemini_config['API_KEY']
+API_KEY = random.choice([gemini_config['API_KEY_RH'], gemini_config['API_KEY_RHA']])
+
 
 params = {'key': API_KEY}  # Use the actual API key provided
 headers = {'Content-Type': 'application/json'}
@@ -43,7 +45,7 @@ sendgrid_config = read_config()['Sendgrid']
 
 def send_alert_email(connection, server, email, alerts):
 
-    sender_email = "remisharoon@gmail.com"
+    sender_email = "jobs-agent@gmail.com"
     receiver_email = email
 
     message = MIMEMultipart()
@@ -104,7 +106,7 @@ async def send_alert_emails():
     # Connect to Gmail's SMTP server
     Username = sendgrid_config['Username']
     Password = sendgrid_config['Password']
-    server = smtplib.SMTP('smtp.sendgrid.net', 587)
+    server = smtplib.SMTP('pro.turbo-smtp.com', 587)
     server.starttls()  # Encrypts the email
     server.login(Username, Password)  # Log in to server
 

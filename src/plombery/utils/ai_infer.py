@@ -2,18 +2,29 @@ import requests
 import time
 import json
 from config import read_config
+import random
 
 # Set up the API request
-url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+# url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+
+# Updated endpoint for Gemini 1.5 Flash
+# model_name = "models/gemini-1.5-flash"
+url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
 
 
 # params = {'key': 'your_api_key'}  # Replace 'your_api_key' with the actual API key
 gemini_config = read_config()['GeminiPro']
-API_KEY = gemini_config['API_KEY']
+# API_KEY = gemini_config['API_KEY']
+API_KEY = random.choice([gemini_config['API_KEY_RH'], gemini_config['API_KEY_RHA']])
+
+headers = {
+    'Content-Type': 'application/json',
+    'X-goog-api-key': API_KEY
+}
+
 
 params = {'key': API_KEY}  # Use the actual API key provided
-headers = {'Content-Type': 'application/json'}
-
 
 def infer(payload):
     try_count = 1

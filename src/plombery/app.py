@@ -1,5 +1,6 @@
+import jobs_scrape_pipeline, jobs_alerts_pipeline, standardization_pipeline, dubzl_crs
 # from plombery import get_app  # noqa: F401
-import jobs_scrape_pipeline, jobs_alerts_pipeline, standardization_pipeline
+
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ def execute_query(query):
         engine.dispose()
 
 # Example usage
-query = "INSERT INTO ja_country_names_std_mapping (source_value, target_value) VALUES ('AZ, AE', 'Dubai')"
-execute_query(query)
+# query = "INSERT INTO ja_country_names_std_mapping (source_value, target_value) VALUES ('AZ, AE', 'Dubai')"
+# execute_query(query)
 
 

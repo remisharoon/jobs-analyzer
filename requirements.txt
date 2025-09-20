@@ -14,3 +14,8 @@ plombery
 requests-html
 lxml[html_clean]
 marimo
+json-repair
+dirtyjson
+python-rapidjson
+elasticsearch==7.13
+boto3
