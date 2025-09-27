@@ -419,7 +419,7 @@ def get_raw_data() -> pd.DataFrame:
             # site_name=["indeed", "linkedin", "zip_recruiter"],
             site_name=["linkedin"],
             # search_term="data",
-            search_term=' Data Engineer OR Data Architect ',
+            search_term=' Senior Data Engineer OR Data Engineer OR Data Architect ',
             location=location,
             results_wanted=100,
             hours_old=168,

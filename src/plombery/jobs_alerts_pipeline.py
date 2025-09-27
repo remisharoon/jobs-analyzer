@@ -25,6 +25,7 @@ from email.mime.multipart import MIMEMultipart
 import smtplib
 from sqlalchemy import text
 from config import read_config
+import re
 
 # Set up the API request
 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
@@ -125,19 +126,81 @@ async def send_alert_emails():
         subscriptions_dict[sub.email].append(sub)
 
     # Fetch job alerts for each subscriber and send email
+    # for email, subs in subscriptions_dict.items():
+    #     conditions = " OR ".join([
+    #         f"(job_title_inferred = '{sub.job_title}' AND country_inferred = '{sub.country}')"
+    #         for sub in subs
+    #     ])
+    #     query = text(f"""
+    #         SELECT distinct date_posted, title, company, location, job_url, country_inferred
+    #         FROM ja_jobs_norm_vw
+    #         WHERE ({conditions})
+    #         AND date_posted >= CURRENT_DATE - INTERVAL '7 DAY'
+    #         ORDER BY date_posted DESC
+    #     """)
+    #     alerts = connection.execute(query).fetchall()
+    #     if alerts:
+    #         send_alert_email(connection, server, email, alerts)
+
+    # for email, subs in subscriptions_dict.items():
+    #     clauses = []
+    #     params = {}
+    #     for i, sub in enumerate(subs):
+    #         # Build a regex: \bdata\s+engineer(ing)?\b (case-insensitive)
+    #         kw = sub.job_title.strip().lower()
+    #         if kw == "data engineer":
+    #             pattern = r"\bdata\s+engineer(ing)?\b"
+    #         else:
+    #             # generic fallback: escape user text and do word-boundary match
+    #             pattern = rf"\b{re.escape(kw)}\b"
+    #
+    #         clauses.append(f"(job_title_inferred ~* :p{i} AND country_inferred = :c{i})")
+    #         params[f"p{i}"] = pattern
+    #         params[f"c{i}"] = sub.country
+    #
+    #     conditions = " OR ".join(clauses)
+    #     sql = f"""
+    #         SELECT DISTINCT date_posted, title, company, location, job_url, country_inferred
+    #         FROM ja_jobs_norm_vw
+    #         WHERE ({conditions})
+    #           AND date_posted >= CURRENT_DATE - INTERVAL '7 DAY'
+    #         ORDER BY date_posted DESC
+    #     """
+    #     alerts = connection.execute(text(sql), params).fetchall()
+    #     if alerts:
+    #         send_alert_email(connection, server, email, alerts)
+
+    # Match titles by regex only (ignore country). Uses Postgres \m \M word boundaries.
     for email, subs in subscriptions_dict.items():
-        conditions = " OR ".join([
-            f"(job_title_inferred = '{sub.job_title}' AND country_inferred = '{sub.country}')"
-            for sub in subs
-        ])
-        query = text(f"""
-            SELECT distinct date_posted, title, company, location, job_url, country_inferred
+        clauses = []
+        params = {}
+
+        for i, sub in enumerate(subs):
+            kw = (sub.job_title or "").strip().lower()
+            if kw == "data engineer":
+                # matches "data engineer", "data engineering", "senior data engineer", etc.
+                pattern = r"\mdata\s+engineer(ing)?\M"
+            else:
+                # generic fallback: word-boundary match of the full term
+                # (e.g., "data scientist", "data analyst")
+                pattern = rf"\m{re.escape(kw)}\M"
+
+            clauses.append(f"(job_title_inferred ~* :p{i})")
+            params[f"p{i}"] = pattern
+
+        # If no subs for this email, skip
+        if not clauses:
+            continue
+
+        conditions = " OR ".join(clauses)
+        sql = f"""
+            SELECT DISTINCT date_posted, title, company, location, job_url, country_inferred
             FROM ja_jobs_norm_vw
             WHERE ({conditions})
-            AND date_posted >= CURRENT_DATE - INTERVAL '7 DAY'
+              AND date_posted >= CURRENT_DATE - INTERVAL '7 DAY'
             ORDER BY date_posted DESC
-        """)
-        alerts = connection.execute(query).fetchall()
+        """
+        alerts = connection.execute(text(sql), params).fetchall()
         if alerts:
             send_alert_email(connection, server, email, alerts)
 
