@@ -255,6 +255,8 @@ def df_to_actions(df: pd.DataFrame, index: str):
             "_source": r
         }
 
+core_config = read_config()['core']
+
 es_config = read_config()['elasticsearch']
 es_hosts = es_config['host'].split(",")
 es_user = es_config['username']
@@ -347,7 +349,7 @@ class ScrapingUtils:
 class InputParams(BaseModel):
     """Showcase all the available input types in Plombery"""
 
-base_url = "https://uae.dubizzle.com/motors/used-cars/?body_type=349&price__lte=15000&price__gte=1&year__gte=2012&year__lte=2026&sorting=date_desc&page={0}"
+base_url = core_config['base_url']
 
 
 def merge_two_dicts(x, y):
@@ -502,7 +504,7 @@ async def export_json_to_r2():
 
     ACCOUNT_ID = cloudflare_config["ACCOUNT_ID"]
     # R2_ENDPOINT = f"https://{ACCOUNT_ID}.r2.cloudflarestorage.com"
-    R2_ENDPOINT = "https://6d9a56e137a3328cc52e48656dd30d91.r2.cloudflarestorage.com"
+    R2_ENDPOINT = cloudflare_config["R2_ENDPOINT"]
     BUCKET = cloudflare_config["BUCKET"]
     ACCESS_KEY_ID = cloudflare_config["ACCESS_KEY_ID"]
     SECRET_ACCESS_KEY = cloudflare_config["SECRET_ACCESS_KEY"]
