@@ -27,6 +27,8 @@ from elasticsearch import Elasticsearch, helpers
 from uuid import uuid4
 from pathlib import Path
 import boto3
+import logging
+
 
 # llm_json_utils.py
 # Robust JSON extraction/parsing for messy LLM outputs.
@@ -277,7 +279,8 @@ jobs_r2_key = (jobs_r2_key or 'jobs.json').strip()
 jobs_r2_cache_control = cloudflare_config.get('JOBS_CACHE_CONTROL', fallback='public, max-age=300')
 jobs_r2_cache_control = (jobs_r2_cache_control or 'public, max-age=300').strip()
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 JOBS_INDEX_SETTINGS = {
     "settings": {
@@ -737,7 +740,7 @@ def get_raw_data() -> pd.DataFrame:
             # site_name=["indeed", "linkedin", "zip_recruiter"],
             site_name=["linkedin"],
             # search_term="data",
-            search_term=' Senior Data Engineer OR Data Engineer OR Data Architect ',
+            search_term=' Data Engineer OR Data Architect ',
             location=location,
             results_wanted=100,
             hours_old=168,
