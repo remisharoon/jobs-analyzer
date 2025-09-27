@@ -25,14 +25,16 @@ from apscheduler.triggers.cron import CronTrigger
 from elasticsearch import Elasticsearch, helpers
 from pydantic import BaseModel
 from plombery import Trigger, get_logger, register_pipeline, task
-
+import logging
 from config import read_config
+
 
 _STREAM_CHUNK_RE = re.compile(r'self.__next_f.push\(\[1,"(.*?)"\]\)', re.S)
 _ITEM_LIST_PREFIX = '{"@context":"https://schema.org","@type":"ItemList"'
 _CAR_ENTITY_PREFIX = '{"@context":"https://schema.org","@type":["Car"'
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -45,21 +47,23 @@ class CrswtchSettings:
     es_index: str
 
 
-_config = read_config()
 
-_CONFIG_SECTION = 'carswitch'
-crswtch_section = _config.get(_CONFIG_SECTION, {})
-if not crswtch_section:
-    raise KeyError("Missing [carswitch] section in config.ini")
+config = read_config()
 
-listing_url_template = crswtch_section.get('listing_url', 'https://carswitch.com/uae/used-cars/search?page={page}')
-pages = int(crswtch_section.get('pages', '1'))
-min_delay = float(crswtch_section.get('min_delay_seconds', '1.5'))
-max_delay = float(crswtch_section.get('max_delay_seconds', '4.0'))
-detail_retry_count = int(crswtch_section.get('detail_retry_count', '3'))
+CONFIG_SECTION = 'crstch'
+crstch_section = config[CONFIG_SECTION]
 
-_es_config = _config['elasticsearch']
-es_index = crswtch_section.get('es_index') or _es_config.get('carswitch_index', 'carswitch_cars')
+if not crstch_section:
+    raise KeyError("Missing [crstch] section in config.ini")
+
+listing_url_template = crstch_section['listing_url']
+pages = int(crstch_section.get('pages', '1'))
+min_delay = float(crstch_section.get('min_delay_seconds', '1.5'))
+max_delay = float(crstch_section.get('max_delay_seconds', '4.0'))
+detail_retry_count = int(crstch_section.get('detail_retry_count', '3'))
+
+_es_config = config['elasticsearch']
+es_index = crstch_section.get('es_index') or _es_config.get('carswitch_index', 'carswitch_cars')
 
 SETTINGS = CrswtchSettings(
     listing_url_template=listing_url_template,
@@ -346,9 +350,9 @@ def es_client() -> Elasticsearch:
     )
     try:
         info = es.info()
-logger.info("Connected to ES: %s", info.get('cluster_name', 'unknown-cluster'))
+        logger.info("Connected to ES: %s", info.get('cluster_name', 'unknown-cluster'))
     except Exception as exc:  # pragma: no cover - connectivity failure is logged but not fatal
-    logger.warning("Failed to fetch ES info: %s", exc)
+        logger.warning("Failed to fetch ES info: %s", exc)
     return es
 
 
@@ -446,7 +450,7 @@ async def crswtch_car_data() -> None:
 
     for page in range(1, SETTINGS.pages + 1):
         url = SETTINGS.listing_url_template.format(page=page)
-    logger.info("Fetching Crswtch listing page %s", url)
+        logger.info("Fetching Crswtch listing page %s", url)
         listing_html = _fetch(session, url, retries=2)
         df = parse_crswtch_listing_page(listing_html)
         if df.empty:
