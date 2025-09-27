@@ -143,3 +143,9 @@ Thumbs.db
 *.csv
 *.html
 *.json
+*.jsonl
+*.xml
+*.ini
+*.iml
+*.toml
+
