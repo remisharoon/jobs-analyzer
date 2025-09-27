@@ -9,8 +9,9 @@ Jobs Analyzer uses a sophisticated data pipeline to fetch, analyze, and visualiz
 1. **Data Acquisition**: The data is sourced from the [JobSpy](https://github.com/Bunsly/JobSpy) library, which aggregates job listings from various platforms.
 2. **Data Analysis**: The analysis is powered by the [Gemini Pro API](https://ai.google.dev/), offering deep insights into the job market trends and skill demands.
 3. **Data Pipeline**: The entire pipeline is run using [Plombery](https://lucafaggianelli.github.io/plombery/) on a free VM provided by Oracle Cloud, ensuring cost-effective scalability.
-4. **Data Storage**: Processed data is stored in a free PostgreSQL instance hosted on [NeonDB](https://neon.tech/), optimizing for accessibility and performance.
-5. **Dashboard**: The results are visualized through a dashboard hosted on Streamlit Cloud, available at [https://jobs-analyzer.streamlit.app/](https://jobs-analyzer.streamlit.app/).
+4. **Data Storage**: Processed data is stored in a free PostgreSQL instance hosted on [NeonDB](https://neon.tech/) and mirrored into Elasticsearch for fast search and analytical workloads.
+5. **Data Distribution**: Each pipeline run exports the latest job inventory to Cloudflare R2 (`me-data-jobs` bucket) as a public JSON feed.
+6. **Dashboard**: The results are visualized through a dashboard hosted on Streamlit Cloud, available at [https://jobs-analyzer.streamlit.app/](https://jobs-analyzer.streamlit.app/).
 
 ## Getting Started
 
@@ -22,7 +23,15 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 2. Ensure you have access to the JobSpy library and Gemini Pro API.
 3. Set up a free VM on Oracle Cloud and configure it according to the project requirements.
 4. Create a free PostgreSQL database on NeonDB and configure the connection parameters in the project.
-5. Deploy the Streamlit dashboard to Streamlit Cloud, using the provided configuration files.
+5. Provision an Elasticsearch cluster (or use an existing one) and set `host`, `username`, `password`, and `jobs_index` in `src/plombery/config/config.ini`.
+6. Set up a Cloudflare R2 bucket (default: `me-data-jobs`) and update the credentials plus `JOBS_BUCKET`/`JOBS_EXPORT_KEY` values in `src/plombery/config/config.ini`.
+7. Deploy the Streamlit dashboard to Streamlit Cloud, using the provided configuration files.
+
+### R2 Export
+
+- The pipeline writes a `jobs.json` snapshot to Cloudflare R2 using the bucket/key defined in `JOBS_BUCKET` and `JOBS_EXPORT_KEY`.
+- The default public URL is `https://6d9a56e137a3328cc52e48656dd30d91.r2.cloudflarestorage.com/me-data-jobs/jobs.json`.
+- Update `JOBS_CACHE_CONTROL` if you need different CDN caching behaviour.
 
 ## Contributions
 

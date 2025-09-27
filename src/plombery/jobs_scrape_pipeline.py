@@ -23,12 +23,16 @@ from config import read_config
 import unicodedata
 import re
 import random
+from elasticsearch import Elasticsearch, helpers
+from uuid import uuid4
+from pathlib import Path
+import boto3
 
 # llm_json_utils.py
 # Robust JSON extraction/parsing for messy LLM outputs.
 
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 import json
 import re
 
@@ -235,12 +239,15 @@ GEMINI_V1_5_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemin
 MAX_RETRIES_V2 = 3          # how many 429s before trying 1 .5
 MAX_RETRIES_V1_5 = 3        # optional: cap total tries
 
-# params = {'key': 'your_api_key'}  # Replace 'your_api_key' with the actual API key
-gemini_config = read_config()['GeminiPro']
+config = read_config()
+gemini_config = config['GeminiPro']
+openrouter_config = config['openrouter']
+neondb_config = config['PostgresDB']
+es_config = config['elasticsearch']
+cloudflare_config = config['cloudflare']
 
 GEMINI_API_KEY = random.choice([gemini_config['API_KEY_RH'], gemini_config['API_KEY_RHA']])
 
-openrouter_config = read_config()['openrouter']
 # OR_API_KEY = openrouter_config['API_KEY']
 
 HEADERS = {
@@ -252,8 +259,312 @@ HEADERS = {
 PARAMS = {'key': GEMINI_API_KEY}  # Use the actual API key provided
 # headers = {'Content-Type': 'application/json'}
 
-neondb_config = read_config()['PostgresDB']
 connection_string = neondb_config['connection_string']
+
+es_hosts = [host.strip() for host in es_config.get('host', fallback='').split(',') if host.strip()]
+es_user = es_config.get('username', fallback=None)
+es_password = es_config.get('password', fallback=None)
+jobs_es_index = es_config.get('jobs_index', fallback='jobs_analyzer_jobs')
+jobs_es_index = (jobs_es_index or 'jobs_analyzer_jobs').strip()
+
+r2_endpoint = cloudflare_config['R2_ENDPOINT']
+r2_access_key = cloudflare_config['ACCESS_KEY_ID']
+r2_secret_key = cloudflare_config['SECRET_ACCESS_KEY']
+jobs_r2_bucket = cloudflare_config.get('JOBS_BUCKET', fallback='me-data-jobs')
+jobs_r2_bucket = (jobs_r2_bucket or 'me-data-jobs').strip()
+jobs_r2_key = cloudflare_config.get('JOBS_EXPORT_KEY', fallback='jobs.json')
+jobs_r2_key = (jobs_r2_key or 'jobs.json').strip()
+jobs_r2_cache_control = cloudflare_config.get('JOBS_CACHE_CONTROL', fallback='public, max-age=300')
+jobs_r2_cache_control = (jobs_r2_cache_control or 'public, max-age=300').strip()
+
+logger = get_logger(__name__)
+
+JOBS_INDEX_SETTINGS = {
+    "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "5s",
+    },
+    "mappings": {
+        "dynamic": True,
+        "dynamic_templates": [
+            {
+                "dates": {
+                    "match": "*_date",
+                    "mapping": {
+                        "type": "date",
+                        "format": "strict_date_optional_time||epoch_millis",
+                    },
+                }
+            },
+            {
+                "timestamps": {
+                    "match": "*_at",
+                    "mapping": {
+                        "type": "date",
+                        "format": "strict_date_optional_time||epoch_millis",
+                    },
+                }
+            },
+            {
+                "keywords": {
+                    "match_mapping_type": "string",
+                    "mapping": {"type": "keyword", "ignore_above": 512},
+                }
+            },
+        ],
+        "properties": {
+            "job_hash": {"type": "keyword"},
+            "job_url": {"type": "keyword"},
+            "company_url": {"type": "keyword"},
+            "title": {
+                "type": "text",
+                "fields": {"kw": {"type": "keyword", "ignore_above": 256}},
+            },
+            "description": {"type": "text"},
+        },
+    },
+}
+
+_es_client: Optional[Elasticsearch] = None
+_jobs_r2_client = None
+
+
+def get_es_client() -> Elasticsearch:
+    global _es_client
+    if _es_client is not None:
+        return _es_client
+
+    if not es_hosts:
+        raise RuntimeError("Elasticsearch host configuration is empty")
+
+    es_kwargs = {
+        "hosts": es_hosts,
+        "timeout": 30,
+        "max_retries": 3,
+        "retry_on_timeout": True,
+    }
+    if es_user and es_password:
+        es_kwargs["http_auth"] = (es_user, es_password)
+
+    _es_client = Elasticsearch(**es_kwargs)
+    return _es_client
+
+
+def ensure_jobs_index(es_client: Elasticsearch) -> None:
+    if not es_client.indices.exists(index=jobs_es_index):
+        es_client.indices.create(index=jobs_es_index, body=JOBS_INDEX_SETTINGS)
+
+
+def get_jobs_r2_client():
+    global _jobs_r2_client
+    if _jobs_r2_client is not None:
+        return _jobs_r2_client
+
+    session = boto3.session.Session()
+    _jobs_r2_client = session.client(
+        service_name="s3",
+        endpoint_url=r2_endpoint,
+        aws_access_key_id=r2_access_key,
+        aws_secret_access_key=r2_secret_key,
+    )
+    return _jobs_r2_client
+
+
+def dataframe_to_es_actions(df: pd.DataFrame):
+    for record in df.to_dict(orient="records"):
+        doc = {}
+        for field, value in record.items():
+            if isinstance(value, pd.Timestamp):
+                doc[field] = value.isoformat() if not pd.isna(value) else None
+            elif isinstance(value, datetime):
+                doc[field] = value.isoformat()
+            elif pd.isna(value):
+                doc[field] = None
+            else:
+                doc[field] = value
+
+        doc_id = doc.get("job_hash") or doc.get("job_url")
+        if doc_id is None:
+            doc_id = str(uuid4())
+        else:
+            doc_id = str(doc_id)
+
+        yield {
+            "_index": jobs_es_index,
+            "_id": doc_id,
+            "_op_type": "index",
+            "_source": doc,
+        }
+
+
+def save_to_elasticsearch(df: pd.DataFrame) -> None:
+    if df.empty:
+        logger.info("No rows to index into Elasticsearch (%s)", jobs_es_index)
+        return
+
+    es_client = get_es_client()
+    ensure_jobs_index(es_client)
+
+    actions = list(dataframe_to_es_actions(df))
+    if not actions:
+        logger.info("No serializable job rows for Elasticsearch")
+        return
+
+    try:
+        indexed, errors = helpers.bulk(
+            es_client,
+            actions,
+            chunk_size=500,
+            request_timeout=120,
+            raise_on_error=False,
+            raise_on_exception=False,
+        )
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Elasticsearch bulk indexing failed")
+        raise
+
+    if errors:
+        logger.warning(
+            "Elasticsearch bulk indexing completed with %d errors (index=%s)",
+            len(errors),
+            jobs_es_index,
+        )
+        logger.debug("First Elasticsearch error: %s", errors[0])
+
+    logger.info("Indexed %d job records into Elasticsearch index %s", indexed, jobs_es_index)
+
+
+def fetch_jobs_from_es(es_client: Elasticsearch, fields: list[str]):
+    query = {"query": {"match_all": {}}}
+    if fields:
+        query["_source"] = fields
+
+    for doc in helpers.scan(
+        es_client,
+        index=jobs_es_index,
+        query=query,
+        preserve_order=False,
+        size=1000,
+    ):
+        yield doc.get("_source", {})
+
+
+JOBS_EXPORT_FIELDS = [
+    "job_hash",
+    "site",
+    "title",
+    "job_title_inferred",
+    "company",
+    "company_name_inferred",
+    "location",
+    "country_inferred",
+    "state_inferred",
+    "city_inferred",
+    "job_type",
+    "job_type_inferred",
+    "date_posted",
+    "min_amount",
+    "max_amount",
+    "currency",
+    "is_remote",
+    "job_url",
+    "job_url_direct",
+    "company_url",
+    "company_website_inferred",
+    "company_industry",
+    "company_industry_inferred",
+    "company_description",
+    "company_description_inferred",
+    "desired_tech_skills_inferred",
+    "desired_soft_skills_inferred",
+    "desired_domain_skills_inferred",
+    "domains_inferred",
+    "job_description",
+    "job_description_inferred",
+    "job_requirements_inferred",
+    "job_responsibilities_inferred",
+    "job_benefits_inferred",
+    "salary",
+    "salary_inferred",
+    "is_deleted",
+]
+
+
+def export_jobs_dataframe(rows: List[Dict[str, Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame.from_records(rows)
+    present_cols = [col for col in JOBS_EXPORT_FIELDS if col in df.columns]
+
+    if present_cols:
+        df = df[present_cols].copy()
+    else:
+        df = df.copy()
+
+    if "date_posted" in df.columns:
+        df["date_posted"] = pd.to_datetime(df["date_posted"], errors="coerce")
+        df.sort_values(by="date_posted", ascending=False, inplace=True)
+        df["date_posted"] = df["date_posted"].apply(
+            lambda ts: ts.isoformat() if pd.notna(ts) else None
+        )
+
+    df.reset_index(drop=True, inplace=True)
+    df = df.where(pd.notna(df), None)
+    return df
+
+
+@task
+async def export_jobs_json_to_r2():
+    es_client = get_es_client()
+    ensure_jobs_index(es_client)
+
+    rows = list(fetch_jobs_from_es(es_client, JOBS_EXPORT_FIELDS))
+    if not rows:
+        logger.warning(
+            "No job documents available in Elasticsearch index %s for export",
+            jobs_es_index,
+        )
+        return
+
+    df = export_jobs_dataframe(rows)
+    if df.empty:
+        logger.warning("Job export dataframe is empty; skipping R2 upload")
+        return
+
+    export_path = Path("jobs.json")
+    df.to_json(
+        export_path,
+        orient="records",
+        force_ascii=False,
+        indent=2,
+    )
+
+    r2_client = get_jobs_r2_client()
+    extra_args = {
+        "ContentType": "application/json",
+        "CacheControl": jobs_r2_cache_control,
+        "ACL": "public-read",
+    }
+
+    try:
+        r2_client.upload_file(
+            Filename=str(export_path),
+            Bucket=jobs_r2_bucket,
+            Key=jobs_r2_key,
+            ExtraArgs=extra_args,
+        )
+    except Exception:
+        logger.exception("Failed to upload jobs export to R2")
+        raise
+
+    public_url = f"{r2_endpoint.rstrip('/')}/{jobs_r2_bucket}/{jobs_r2_key}"
+    logger.info(
+        "Exported %d job records to R2 (%s)",
+        len(df),
+        public_url,
+    )
 
 # ----------------------------------------------------------------------------
 def call_gemini(payload: dict):
@@ -286,9 +597,16 @@ def call_gemini(payload: dict):
     raise RuntimeError("Gemini API: exhausted retries on both 2.0-flash and 1.5-pro")
 
 def save_to_db(table_name, df: pd.DataFrame):
+    if df.empty:
+        logger.info("No rows to persist to table %s", table_name)
+        return
+
     engine = create_engine(connection_string)
-    df.to_sql(name=table_name, con=engine, if_exists='append', index=False)
-    engine.dispose()
+    try:
+        df.to_sql(name=table_name, con=engine, if_exists='append', index=False)
+        logger.info("Inserted %d records into %s", len(df), table_name)
+    finally:
+        engine.dispose()
 
 def query_to_df(query) -> pd.DataFrame:
     engine = create_engine(connection_string)
@@ -461,15 +779,23 @@ def get_raw_data() -> pd.DataFrame:
 
 @task
 async def get_jobs_data(params: InputParams) -> pd.DataFrame:
+    jobs: pd.DataFrame = pd.DataFrame()
     try:
-        jobs: pd.DataFrame = get_raw_data()
+        jobs = get_raw_data()
+        if jobs.empty:
+            logger.info("No new jobs fetched; skipping persistence steps")
+            return jobs
+
         save_to_db('ja_jobs_raw_new', jobs)
+        save_to_elasticsearch(jobs)
 
         # inferred_jobs = infer_from_rawdata()
         # save_to_db('ja_jobs_raw', inferred_jobs)
 
     except Exception as e:
-        print(e)
+        logger.exception("Failed to ingest job data")
+
+    return jobs
 
 
 
@@ -661,7 +987,12 @@ def infer_from_rawdata(batch_size=5) -> pd.DataFrame:
 async def ai_infer_raw_data():
     for i in range(1):
         inferred_jobs = infer_from_rawdata(batch_size=10)
+        if inferred_jobs.empty:
+            logger.info("No inferred jobs ready for persistence on iteration %d", i)
+            continue
+
         save_to_db('ja_jobs_raw', inferred_jobs)
+        save_to_elasticsearch(inferred_jobs)
 
 
 
@@ -683,7 +1014,7 @@ async def load_jobs_analyzer_site():
 register_pipeline(
     id="jobs_pipeline",
     description="""This is a very jobby pipeline""",
-    tasks=[get_jobs_data, ai_infer_raw_data, load_jobs_analyzer_site],
+    tasks=[get_jobs_data, ai_infer_raw_data, export_jobs_json_to_r2, load_jobs_analyzer_site],
     # tasks= [ai_infer_raw_data],
     # tasks=[load_jobs_analyzer_site],
     triggers=[
