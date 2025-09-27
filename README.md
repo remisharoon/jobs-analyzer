@@ -27,6 +27,17 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 6. Set up a Cloudflare R2 bucket (default: `me-data-jobs`) and update the credentials plus `JOBS_BUCKET`/`JOBS_EXPORT_KEY` values in `src/plombery/config/config.ini`.
 7. Deploy the Streamlit dashboard to Streamlit Cloud, using the provided configuration files.
 
+### Crswtch Scraper Pipeline
+
+- The Crswtch scraper lives in `src/plombery/carswitch_crs.py`. It mirrors the Dubizzle flow: scrape, enrich with detail page data, and index into Elasticsearch.
+- Configure the behaviour in the `[carswitch]` section of `src/plombery/config/config.ini` (listing URL template, page count, back-off timings, and ES index name).
+- Ensure the Elasticsearch config contains either `carswitch_index` or set `es_index` inside the `[carswitch]` block.
+- Run the task manually with `plombery run crswtch_pipeline` or let the scheduled trigger (06:00 Asia/Dubai) execute it daily.
+
+### Testing
+
+- Run `python -m pytest tests/test_crswtch_parser.py` (or `python -m unittest`) to validate the Crswtch parsers against the embedded fixtures under `tests/fixtures/crswtch/` before deploying changes.
+
 ### R2 Export
 
 - The pipeline writes a `jobs.json` snapshot to Cloudflare R2 using the bucket/key defined in `JOBS_BUCKET` and `JOBS_EXPORT_KEY`.

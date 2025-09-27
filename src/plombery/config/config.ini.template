@@ -4,4 +4,13 @@ connection_string = postgresql://********:*********@ep-****-****-****-pooler.eu-
 [GeminiPro]
 API_KEY = **********************************
 
+[carswitch]
+listing_url = https://carswitch.com/uae/used-cars/search?page={page}
+pages = 1
+min_delay_seconds = 1.5
+max_delay_seconds = 4.0
+detail_retry_count = 3
+es_index = carswitch_cars
 
+[elasticsearch]
+carswitch_index = carswitch_cars
