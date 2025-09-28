@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -131,6 +132,51 @@ def _extract_balanced_json(payload: str) -> str | None:
     return payload[:end_idx]
 
 
+# ----------------------------------------------------------------------------
+# Date helpers
+# ----------------------------------------------------------------------------
+
+DATE_KEYS = {
+    'createdAt', 'created_at',
+    'publishedAt', 'published_at',
+    'datePublished', 'date_published',
+    'postedAt', 'posted_at',
+    'added', 'addedAt', 'added_at',
+    'discountAppliedAt',
+}
+
+
+def _to_epoch_and_iso(val: Any) -> tuple[int | None, str | None]:
+    if val is None:
+        return None, None
+    # numeric seconds/millis
+    try:
+        if isinstance(val, (int, float)) or (isinstance(val, str) and val.isdigit()):
+            iv = int(val)
+            # heuristics: milliseconds if large
+            if iv > 10_000_000_000:
+                iv = iv // 1000
+            try:
+                iso = datetime.fromtimestamp(iv, tz=timezone.utc).isoformat()
+            except Exception:
+                iso = None
+            return iv, iso
+    except Exception:
+        pass
+    # ISO-like string
+    if isinstance(val, str):
+        s = val.strip().replace('Z', '+00:00')
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            epoch = int(dt.timestamp())
+            return epoch, dt.astimezone(timezone.utc).isoformat()
+        except Exception:
+            return None, None
+    return None, None
+
+
 def _parse_listing_summary(html_text: str) -> dict[str, dict[str, Any]]:
     """Extract the summary cards (price, mileage, etc.) from listing page HTML."""
     records: dict[str, dict[str, Any]] = {}
@@ -155,6 +201,27 @@ def _parse_listing_summary(html_text: str) -> dict[str, dict[str, Any]]:
             if not listing_id:
                 continue
             data['id'] = listing_id
+            # Extract and normalize any date-like fields present
+            for dk in list(DATE_KEYS):
+                if dk in data and data.get(dk) is not None:
+                    epoch, iso = _to_epoch_and_iso(data.get(dk))
+                    norm = dk.lower().replace('date', '_date').replace('at', '_at')
+                    # normalize common ones
+                    if 'created' in dk.lower():
+                        data['created_at_epoch'] = epoch
+                        data['created_at_iso'] = iso
+                    elif 'publish' in dk.lower():
+                        data['published_at_epoch'] = epoch
+                        data['published_at_iso'] = iso
+                    elif 'posted' in dk.lower():
+                        data['posted_at_epoch'] = epoch
+                        data['posted_at_iso'] = iso
+                    elif 'added' in dk.lower():
+                        data['added_epoch'] = epoch
+                        data['added_iso'] = iso
+                    elif 'discountappliedat' in dk.lower():
+                        data['discount_applied_at_epoch'] = epoch
+                        data['discount_applied_at_iso'] = iso
             records[listing_id] = data
     return records
 
@@ -275,6 +342,13 @@ def _flatten_car_entity(entity: dict[str, Any]) -> dict[str, Any]:
     if isinstance(potential_action, dict):
         put('detail_potential_action', potential_action)
 
+    # Optional datePublished on detail entity
+    dp = entity.get('datePublished')
+    if dp is not None:
+        epoch, iso = _to_epoch_and_iso(dp)
+        put('detail_date_published_epoch', epoch)
+        put('detail_date_published_iso', iso)
+
     return flattened
 
 
@@ -390,6 +464,13 @@ def ensure_index(es: Elasticsearch, index: str) -> None:
         es.indices.create(index=index, body=mapping)
 
 
+def es_doc_exists(es: Elasticsearch, index: str, doc_id: str) -> bool:
+    try:
+        return bool(es.exists(index=index, id=doc_id))
+    except Exception:
+        return False
+
+
 def df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
     clean = df.replace({np.nan: None})
     for record in clean.to_dict(orient='records'):
@@ -462,6 +543,11 @@ async def crswtch_car_data() -> None:
         for record in df.to_dict(orient='records'):
             record['source_page'] = page
             detail_url = _absolute_url(record.get('detail_url'))
+            # Skip if this listing ID already exists in ES
+            rec_id = str(record.get('id')) if record.get('id') is not None else None
+            if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
+                logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
+                continue
             if detail_url:
                 detail_payload = await _fetch_detail_with_retry(session, detail_url)
             else:
@@ -520,28 +606,35 @@ async def export_crswtch_json_to_r2():
     FIELDS = [
         "id",
         "price",
-        # "detail_offer_price",
+        "detail_offer_price",
         "detail_name",
-        # "detail_brand_names",
+        # brand/model basics
         "make",
         "model",
-        "listingType",        
+        "listingType",
         "detail_vehicle_model_date",
         "detail_vehicle_transmission",
         "detail_body_type",
-        # "detail_drive_wheel_configuration",
+        "detail_drive_wheel_configuration",
         "detail_mileage_value",
         "detail_mileage_unit",
-        # "detail_color",
+        "detail_color",
         "detail_url",
-        # "detail_item_url",
-        # "source_page",
-        # "source",
+        "detail_item_url",
+        "source_page",
+        "source",
         "city",
         "regionalSpecs",
         "greatDeal",
         "goodDeal",
-        "fairDeal",        
+        "fairDeal",
+        # Dates collected from summary and detail
+        "created_at_iso",
+        "published_at_iso",
+        "posted_at_iso",
+        "added_iso",
+        "discount_applied_at_iso",
+        "detail_date_published_iso",
     ]
 
     es = es_client()
