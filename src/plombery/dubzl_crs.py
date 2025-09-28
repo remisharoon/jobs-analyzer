@@ -492,7 +492,7 @@ async def export_json_to_r2():
     df = df[present_cols].copy()
 
     # Write compact JSON (array of objects)
-    out_path = Path("listings.json")
+    out_path = Path("dbzl_listings.json")
     df.to_json(out_path, orient="records", force_ascii=False)
 
     print(f"Wrote {out_path.resolve()} with {len(df)} rows and {len(df.columns)} columns")
@@ -517,8 +517,8 @@ async def export_json_to_r2():
         aws_secret_access_key=SECRET_ACCESS_KEY,
     )
 
-    local = Path("listings.json")
-    key = "data/listings.json"  # path inside the bucket
+    local = Path("dbzl_listings.json")
+    key = "data/dbzl_listings.json"  # path inside the bucket
 
     s3.upload_file(
         Filename=str(local),

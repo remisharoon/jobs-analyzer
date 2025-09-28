@@ -33,6 +33,7 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 - Configure the behaviour in the `[carswitch]` section of `src/plombery/config/config.ini` (listing URL template, page count, back-off timings, and ES index name).
 - Ensure the Elasticsearch config contains either `carswitch_index` or set `es_index` inside the `[carswitch]` block.
 - Run the task manually with `plombery run crswtch_pipeline` or let the scheduled trigger (06:00 Asia/Dubai) execute it daily.
+  - The pipeline includes an export step that writes `crswth_listings.json` and uploads it to Cloudflare R2 at `data/crswth_listings.json` within the configured bucket.
 
 ### Testing
 

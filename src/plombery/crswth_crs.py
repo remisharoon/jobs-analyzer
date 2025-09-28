@@ -23,6 +23,8 @@ import pandas as pd
 import requests
 from apscheduler.triggers.cron import CronTrigger
 from elasticsearch import Elasticsearch, helpers
+import boto3
+import os
 from pydantic import BaseModel
 from plombery import Trigger, get_logger, register_pipeline, task
 import logging
@@ -501,17 +503,95 @@ class InputParams(BaseModel):  # pragma: no cover - required by Register API but
     """Placeholder for pipeline parameters (none required)."""
 
 
+# ----------------------------------------------------------------------------
+# Export to Cloudflare R2
+# ----------------------------------------------------------------------------
+
+def fetch_all_docs(es: Elasticsearch, index: str, fields: list[str]):
+    query = {"query": {"match_all": {}}, "_source": fields}
+    for doc in helpers.scan(es, index=index, query=query, preserve_order=False, size=1000):
+        yield doc.get("_source", {})
+
+
+@task
+async def export_crswtch_json_to_r2():
+    cloudflare_config = config['cloudflare']
+
+    FIELDS = [
+        "id",
+        "price",
+        "detail_offer_price",
+        "detail_name",
+        "detail_brand_names",
+        "detail_model",
+        "detail_vehicle_model_date",
+        "detail_vehicle_transmission",
+        "detail_body_type",
+        "detail_drive_wheel_configuration",
+        "detail_mileage_value",
+        "detail_mileage_unit",
+        "detail_color",
+        "detail_url",
+        "detail_item_url",
+        "source_page",
+        "source",
+    ]
+
+    es = es_client()
+    if not es.indices.exists(index=SETTINGS.es_index):
+        raise SystemExit(f"Index not found: {SETTINGS.es_index}")
+
+    rows = list(fetch_all_docs(es, SETTINGS.es_index, FIELDS))
+    if not rows:
+        raise SystemExit("No documents returned from ES.")
+
+    df = pd.DataFrame.from_records(rows)
+    present_cols = [c for c in FIELDS if c in df.columns]
+    df = df[present_cols].copy()
+
+    out_path = Path("crswth_listings.json")
+    df.to_json(out_path, orient="records", force_ascii=False)
+
+    ACCOUNT_ID = cloudflare_config["ACCOUNT_ID"]
+    R2_ENDPOINT = cloudflare_config["R2_ENDPOINT"]
+    BUCKET = cloudflare_config["BUCKET"]
+    ACCESS_KEY_ID = cloudflare_config["ACCESS_KEY_ID"]
+    SECRET_ACCESS_KEY = cloudflare_config["SECRET_ACCESS_KEY"]
+
+    session = boto3.session.Session()
+    s3 = session.client(
+        service_name="s3",
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=ACCESS_KEY_ID,
+        aws_secret_access_key=SECRET_ACCESS_KEY,
+    )
+
+    key = "data/crswth_listings.json"
+    s3.upload_file(
+        Filename=str(out_path),
+        Bucket=BUCKET,
+        Key=key,
+        ExtraArgs={
+            "ContentType": "application/json",
+            "ACL": "public-read",
+            "CacheControl": "public, max-age=60",
+        },
+    )
+
+    logger.info("Uploaded to r2://%s/%s", BUCKET, key)
+
+
 register_pipeline(
     id='crswtch_pipeline',
     description='Scrape Crswtch listings and index enriched data into Elasticsearch.',
-    tasks=[crswtch_car_data],
+    tasks=[crswtch_car_data, export_crswtch_json_to_r2],
     triggers=[
         Trigger(
             id='crswtch_daily',
             name='Crswtch Daily',
             description='Run Crswtch scraper daily at 06:00 Dubai time',
             params=InputParams(),
-            schedule=CronTrigger(hour='6', minute='0', timezone='Asia/Dubai'),
+            schedule=CronTrigger(hour='5', minute='0', timezone='Asia/Dubai'),
         )
     ],
     params=InputParams,
