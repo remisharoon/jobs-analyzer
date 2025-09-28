@@ -404,12 +404,100 @@ def parse_crswtch_listing_page(html_text: str) -> pd.DataFrame:
     return df
 
 
+# def parse_crswtch_detail_page(html_text: str) -> dict[str, Any]:
+#     """Parse detail page structured data (schema.org Car)."""
+#     for chunk in _iter_decoded_chunks(html_text):
+#         for obj in _extract_json_objects(chunk, _CAR_ENTITY_PREFIX):
+#             return _flatten_car_entity(obj)
+#     return {}
+
+_SERVERDATA_KEY = '"serverData":'
+_INSPECTION_KEY = '"inspectionReportData":'
+
+def _extract_object_after_key(chunk: str, key: str) -> dict | None:
+    i = chunk.find(key)
+    if i == -1:
+        return None
+    # position after the colon
+    j = chunk.find('{', i + len(key))
+    if j == -1:
+        return None
+    candidate = _extract_balanced_json(chunk[j:])
+    if not candidate:
+        return None
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
 def parse_crswtch_detail_page(html_text: str) -> dict[str, Any]:
-    """Parse detail page structured data (schema.org Car)."""
+    """Parse detail page structured data & dates."""
+    out: dict[str, Any] = {}
+
+    # 1) JSON-LD (if present)
     for chunk in _iter_decoded_chunks(html_text):
         for obj in _extract_json_objects(chunk, _CAR_ENTITY_PREFIX):
-            return _flatten_car_entity(obj)
-    return {}
+            out.update(_flatten_car_entity(obj))
+            break  # take the first good one
+        if out:  # already found JSON-LD; keep scanning for dates too
+            pass
+
+    # 2) serverData (createdAt / updatedAt / warranty etc.)
+    for chunk in _iter_decoded_chunks(html_text):
+        sd = _extract_object_after_key(chunk, _SERVERDATA_KEY)
+        if not sd:
+            continue
+        # observed nesting: sd["car"] contains the meat
+        # in your sample: sd["car"]["createdAt"], sd["car"]["updatedAt"]
+        car = sd.get("car") or {}
+        # Depending on their shape, sometimes it's nested as sd["car"]["car"]
+        car_obj = car.get("car") if isinstance(car.get("car"), dict) else car
+
+        created = car_obj.get("createdAt")
+        updated = car_obj.get("updatedAt")
+
+        if created is not None:
+            epoch, iso = _to_epoch_and_iso(created)
+            out["created_at_epoch"] = epoch
+            out["created_at_iso"] = iso or created
+
+        if updated is not None:
+            epoch, iso = _to_epoch_and_iso(updated)
+            out["updated_at_epoch"] = epoch
+            out["updated_at_iso"] = iso or updated
+
+        # optional: warranty expiry date
+        warr = car_obj.get("warrantyDetail") or {}
+        if warr.get("manufacturerWarrantyExpiryDate"):
+            epoch, iso = _to_epoch_and_iso(warr["manufacturerWarrantyExpiryDate"])
+            out["warranty_expiry_epoch"] = epoch
+            out["warranty_expiry_iso"] = iso or warr["manufacturerWarrantyExpiryDate"]
+
+        # optional: page timestamp (ms)
+        if isinstance(sd.get("timestamp"), (int, float, str)):
+            epoch, iso = _to_epoch_and_iso(sd["timestamp"])
+            out["page_timestamp_epoch"] = epoch
+            out["page_timestamp_iso"] = iso
+
+        # keep scanning other chunks for inspection report
+        # but you can break here if you prefer first-hit wins
+
+    # 3) inspectionReportData (inspection createdAt)
+    for chunk in _iter_decoded_chunks(html_text):
+        insp = _extract_object_after_key(chunk, _INSPECTION_KEY)
+        if not insp:
+            continue
+        rep = (insp.get("inspectionReport") or {})
+        created = rep.get("createdAt")
+        if created is not None:
+            epoch, iso = _to_epoch_and_iso(created)
+            out["inspection_created_at_epoch"] = epoch
+            out["inspection_created_at_iso"] = iso or created
+        # you can break if you only need the first report
+        break
+
+    return out
+
 
 
 # ----------------------------------------------------------------------------
@@ -514,6 +602,9 @@ async def _fetch_detail_with_retry(session: requests.Session, url: str) -> dict[
     for attempt in range(SETTINGS.detail_retry_count):
         try:
             html_text = _fetch(session, url, retries=1)
+
+            save_html(html_text, "saved_pages/crtstch/detail/page_{0}.html".format(random.randint(1, 100)))
+
             detail = parse_crswtch_detail_page(html_text)
             if detail:
                 return detail
@@ -522,6 +613,14 @@ async def _fetch_detail_with_retry(session: requests.Session, url: str) -> dict[
         await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
     return {}
 
+# def save_html(resp: str, filepath: str):
+#     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+#     Path(filepath).write_bytes(resp)  # exact bytes
+
+def save_html(resp: str, filepath: str, encoding: str = "utf-8") -> None:
+    p = Path(filepath)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(resp, encoding=encoding)
 
 @task
 async def crswtch_car_data() -> None:
@@ -535,6 +634,9 @@ async def crswtch_car_data() -> None:
         url = SETTINGS.listing_url_template.format(page=page)
         logger.info("Fetching Crswtch listing page %s", url)
         listing_html = _fetch(session, url, retries=2)
+
+        save_html(listing_html, "saved_pages/crtstch/page_{0}.html".format(page))
+
         df = parse_crswtch_listing_page(listing_html)
         if df.empty:
             raise ValueError(f"No listings parsed from {url}")
@@ -545,9 +647,9 @@ async def crswtch_car_data() -> None:
             detail_url = _absolute_url(record.get('detail_url'))
             # Skip if this listing ID already exists in ES
             rec_id = str(record.get('id')) if record.get('id') is not None else None
-            if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
-                logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
-                continue
+            # if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
+            #     logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
+            #     continue
             if detail_url:
                 detail_payload = await _fetch_detail_with_retry(session, detail_url)
             else:
