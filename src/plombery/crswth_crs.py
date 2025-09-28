@@ -415,85 +415,117 @@ _SERVERDATA_KEY = '"serverData":'
 _INSPECTION_KEY = '"inspectionReportData":'
 
 def _extract_object_after_key(chunk: str, key: str) -> dict | None:
+    """Find JSON object that appears right after a given key in a decoded Next.js chunk."""
     i = chunk.find(key)
     if i == -1:
         return None
-    # position after the colon
     j = chunk.find('{', i + len(key))
     if j == -1:
         return None
-    candidate = _extract_balanced_json(chunk[j:])
-    if not candidate:
+    obj_txt = _extract_balanced_json(chunk[j:])  # you already have this
+    if not obj_txt:
         return None
     try:
-        return json.loads(candidate)
+        return json.loads(obj_txt)
     except json.JSONDecodeError:
         return None
 
+
+def _normalize_label(label: str) -> str:
+    # Friendly label for charts/UX: "engine_fans" -> "Engine Fans"
+    return label.replace('_', ' ').strip().title()
+
 def parse_crswtch_detail_page(html_text: str) -> dict[str, Any]:
-    """Parse detail page structured data & dates."""
+    """
+    Parse detail page for:
+      - schema.org Car/Product (existing)
+      - inspection report pass/fail (new)
+      - seller nationality (new)
+      - createdAt/updatedAt (you already pull these, keep it)
+    """
     out: dict[str, Any] = {}
 
-    # 1) JSON-LD (if present)
+    # Keep your existing JSON-LD extraction (may not have dates here)
     for chunk in _iter_decoded_chunks(html_text):
         for obj in _extract_json_objects(chunk, _CAR_ENTITY_PREFIX):
             out.update(_flatten_car_entity(obj))
-            break  # take the first good one
-        if out:  # already found JSON-LD; keep scanning for dates too
-            pass
+            break
 
-    # 2) serverData (createdAt / updatedAt / warranty etc.)
+    # Pull serverData from any chunk that contains it
     for chunk in _iter_decoded_chunks(html_text):
         sd = _extract_object_after_key(chunk, _SERVERDATA_KEY)
         if not sd:
             continue
-        # observed nesting: sd["car"] contains the meat
-        # in your sample: sd["car"]["createdAt"], sd["car"]["updatedAt"]
-        car = sd.get("car") or {}
-        # Depending on their shape, sometimes it's nested as sd["car"]["car"]
-        car_obj = car.get("car") if isinstance(car.get("car"), dict) else car
 
-        created = car_obj.get("createdAt")
-        updated = car_obj.get("updatedAt")
+        # --- Seller Nationality ---
+        try:
+            nat = (sd.get("car") or {}).get("carDetails", {}).get("sellerNationality")
+            if isinstance(nat, str) and nat.strip():
+                out["seller_nationality_raw"] = nat
+                out["seller_nationality"] = nat.strip().title()  # "india" -> "India"
+        except Exception:
+            pass
 
-        if created is not None:
-            epoch, iso = _to_epoch_and_iso(created)
-            out["created_at_epoch"] = epoch
-            out["created_at_iso"] = iso or created
+        # --- Inspection Report (pass/fail per item) ---
+        insp = sd.get("inspectionReportData") or {}
+        irep = insp.get("inspectionReport") or {}
+        categories = [
+            ("body",               irep.get("bodyItems")),
+            ("engine",             irep.get("engineItems")),
+            ("electrical",         irep.get("electricalItems")),
+            ("tires_and_brakes",   irep.get("tiresAndBrakesItems")),
+            ("road_test",          irep.get("roadTestItems")),
+        ]
 
-        if updated is not None:
-            epoch, iso = _to_epoch_and_iso(updated)
-            out["updated_at_epoch"] = epoch
-            out["updated_at_iso"] = iso or updated
+        inspection_rows: list[dict[str, Any]] = []
+        for cat_name, cat_obj in categories:
+            items = (cat_obj or {}).get("items") or []
+            for it in items:
+                label = it.get("label")
+                result = it.get("result")
+                if not label or not result:
+                    continue
+                inspection_rows.append({
+                    "category": cat_name,
+                    "label": label,
+                    "label_friendly": _normalize_label(label),
+                    "result": result,  # "pass" | "fail"
+                })
 
-        # optional: warranty expiry date
-        warr = car_obj.get("warrantyDetail") or {}
-        if warr.get("manufacturerWarrantyExpiryDate"):
-            epoch, iso = _to_epoch_and_iso(warr["manufacturerWarrantyExpiryDate"])
-            out["warranty_expiry_epoch"] = epoch
-            out["warranty_expiry_iso"] = iso or warr["manufacturerWarrantyExpiryDate"]
+        if inspection_rows:
+            out["inspection_items"] = inspection_rows
 
-        # optional: page timestamp (ms)
-        if isinstance(sd.get("timestamp"), (int, float, str)):
-            epoch, iso = _to_epoch_and_iso(sd["timestamp"])
+        # Optional: counts / quick flags
+        if inspection_rows:
+            total = len(inspection_rows)
+            fails = sum(1 for r in inspection_rows if r["result"] != "pass")
+            out["inspection_total_items"] = total
+            out["inspection_failed_count"] = fails
+            out["inspection_pass_rate"] = round((total - fails) / total, 4) if total else None
+
+        # Optional: the report's own createdAt (human string like "Sep 28, 2025")
+        created_human = irep.get("createdAt")
+        if created_human:
+            epoch, iso = _to_epoch_and_iso(created_human)  # you can add a "%b %d, %Y" fallback if desired
+            out["inspection_created_at_epoch"] = epoch
+            out["inspection_created_at_iso"] = iso or created_human
+
+        # Optional: a millisecond page timestamp at serverData.timestamp
+        ts = sd.get("timestamp")
+        if ts is not None:
+            epoch, iso = _to_epoch_and_iso(ts)
             out["page_timestamp_epoch"] = epoch
             out["page_timestamp_iso"] = iso
 
-        # keep scanning other chunks for inspection report
-        # but you can break here if you prefer first-hit wins
+        # You already handle createdAt/updatedAt for the ad itself elsewhere:
+        car = (sd.get("car") or {}).get("car") or {}
+        for key_src, key_dst in [("createdAt", "created_at"), ("updatedAt", "updated_at")]:
+            if car.get(key_src):
+                epoch, iso = _to_epoch_and_iso(car[key_src])
+                out[f"{key_dst}_epoch"] = epoch
+                out[f"{key_dst}_iso"] = iso or car[key_src]
 
-    # 3) inspectionReportData (inspection createdAt)
-    for chunk in _iter_decoded_chunks(html_text):
-        insp = _extract_object_after_key(chunk, _INSPECTION_KEY)
-        if not insp:
-            continue
-        rep = (insp.get("inspectionReport") or {})
-        created = rep.get("createdAt")
-        if created is not None:
-            epoch, iso = _to_epoch_and_iso(created)
-            out["inspection_created_at_epoch"] = epoch
-            out["inspection_created_at_iso"] = iso or created
-        # you can break if you only need the first report
+        # We can stop after first good serverData
         break
 
     return out
@@ -602,9 +634,7 @@ async def _fetch_detail_with_retry(session: requests.Session, url: str) -> dict[
     for attempt in range(SETTINGS.detail_retry_count):
         try:
             html_text = _fetch(session, url, retries=1)
-
-            save_html(html_text, "saved_pages/crtstch/detail/page_{0}.html".format(random.randint(1, 100)))
-
+            # save_html(html_text, "saved_pages/crtstch/detail/page_{0}.html".format(random.randint(1, 100)))
             detail = parse_crswtch_detail_page(html_text)
             if detail:
                 return detail
@@ -617,10 +647,12 @@ async def _fetch_detail_with_retry(session: requests.Session, url: str) -> dict[
 #     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 #     Path(filepath).write_bytes(resp)  # exact bytes
 
-def save_html(resp: str, filepath: str, encoding: str = "utf-8") -> None:
-    p = Path(filepath)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(resp, encoding=encoding)
+# def save_html(resp: str, filepath: str, encoding: str = "utf-8") -> None:
+#     p = Path(filepath)
+#     p.parent.mkdir(parents=True, exist_ok=True)
+#     p.write_text(resp, encoding=encoding)
+
+
 
 @task
 async def crswtch_car_data() -> None:
@@ -635,7 +667,7 @@ async def crswtch_car_data() -> None:
         logger.info("Fetching Crswtch listing page %s", url)
         listing_html = _fetch(session, url, retries=2)
 
-        save_html(listing_html, "saved_pages/crtstch/page_{0}.html".format(page))
+        # save_html(listing_html, "saved_pages/crtstch/page_{0}.html".format(page))
 
         df = parse_crswtch_listing_page(listing_html)
         if df.empty:
@@ -647,9 +679,9 @@ async def crswtch_car_data() -> None:
             detail_url = _absolute_url(record.get('detail_url'))
             # Skip if this listing ID already exists in ES
             rec_id = str(record.get('id')) if record.get('id') is not None else None
-            # if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
-            #     logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
-            #     continue
+            if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
+                logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
+                continue
             if detail_url:
                 detail_payload = await _fetch_detail_with_retry(session, detail_url)
             else:
