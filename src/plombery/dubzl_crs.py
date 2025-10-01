@@ -23,6 +23,41 @@ from config import read_config
 import asyncio
 import random
 import boto3, os
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+core_config = read_config()['core']
+
+es_config = read_config()['elasticsearch']
+es_hosts = es_config['host'].split(",")
+es_user = es_config['username']
+es_password = es_config['password']
+ES_INDEX = es_config['index']
+
+cloudflare_config = read_config()['cloudflare']
+
+def es_client():
+    es = Elasticsearch(
+        hosts=es_hosts,
+        http_auth=(es_user, es_password),
+        timeout=30,
+        max_retries=3,
+        retry_on_timeout=True,
+    )
+    print(es.info())
+    return es
+
+es = es_client()
+
+
+
+def es_doc_exists(es: Elasticsearch, index: str, doc_id: str) -> bool:
+    try:
+        return bool(es.exists(index=index, id=doc_id))
+    except Exception:
+        return False
 
 def parse_dubizzle_listings_full(html_text: str) -> pd.DataFrame:
     soup = BeautifulSoup(html_text, "html.parser")
@@ -222,6 +257,9 @@ def parse_dubizzle_listings_full(html_text: str) -> pd.DataFrame:
         else:
             row["html_year_guess"] = row["html_mileage"] = row["html_mileage_unit"] = row["html_transmission"] = row["html_neighbourhood"] = None
 
+        if row["id"] and es_doc_exists(es, ES_INDEX, row["id"]):
+            logger.info("Skip existing listing id=%s in index=%s", row["id"], ES_INDEX)
+            continue
         records.append(row)
 
     df = pd.DataFrame.from_records(records)
@@ -255,32 +293,6 @@ def df_to_actions(df: pd.DataFrame, index: str):
             "_source": r
         }
 
-core_config = read_config()['core']
-
-es_config = read_config()['elasticsearch']
-es_hosts = es_config['host'].split(",")
-es_user = es_config['username']
-es_password = es_config['password']
-ES_INDEX = es_config['index']
-
-cloudflare_config = read_config()['cloudflare']
-
-
-
-
-
-def es_client():
-    es = Elasticsearch(
-        hosts=es_hosts,
-        http_auth=(es_user, es_password),
-        timeout=30,
-        max_retries=3,
-        retry_on_timeout=True,
-    )
-    print(es.info())
-    return es
-
-es = es_client()
 
 def fetch_all_docs(es, index: str, fields: list[str]):
     """
@@ -414,7 +426,7 @@ def load_soup(filepath: str) -> BeautifulSoup:
 
 @task
 async def dbzl_car_data():
-    for page_n in range(1,10):
+    for page_n in range(1,20):
         url = build_url(page_n)
         # url = base_url
         try:

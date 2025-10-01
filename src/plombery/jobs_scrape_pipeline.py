@@ -1018,7 +1018,7 @@ register_pipeline(
     id="jobs_pipeline",
     description="""This is a very jobby pipeline""",
     tasks=[get_jobs_data, ai_infer_raw_data, export_jobs_json_to_r2, load_jobs_analyzer_site],
-    # tasks= [ai_infer_raw_data],
+    # tasks= [export_jobs_json_to_r2],
     # tasks=[load_jobs_analyzer_site],
     triggers=[
         Trigger(
