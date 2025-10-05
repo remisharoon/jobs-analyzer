@@ -24,7 +24,7 @@ import asyncio
 import random
 import boto3, os
 import logging
-
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,12 @@ def save_listings(listings):
         #     print(prop_doc_id, " is already saved")
 
 def build_url(page_n):
-    return base_url.format(page_n)
+    # Get the datetime 2 days before now
+    two_days_before = datetime.now() - timedelta(days=2)
+
+    # Convert to epoch timestamp (int)
+    two_days_epoch_timestamp = int(two_days_before.timestamp())
+    return base_url.format(two_days_epoch_timestamp, page_n)
 
 
 def save_html(resp, filepath: str):
@@ -472,9 +477,10 @@ async def dbzl_car_data():
             print("Bulk result:", resp)
 
             # 👇 human-style pause: random 2–5 seconds
-            await asyncio.sleep(random.uniform(2, 8))
+            await asyncio.sleep(random.uniform(35, 55))
         except Exception as e:
-            print(e)
+            print('************ ERROR *****************', e)
+            break
 
 
 @task
