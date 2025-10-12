@@ -12,5 +12,14 @@ max_delay_seconds = 4.0
 detail_retry_count = 3
 es_index = carswitch_cars
 
+[allsopp]
+listing_url = https://www.allsoppandallsopp.com/dubai/properties/residential/sales/page-{page}
+pages = 100
+min_delay_seconds = 1.5
+max_delay_seconds = 4.0
+detail_retry_count = 3
+es_index = allsopp_properties
+
 [elasticsearch]
 carswitch_index = carswitch_cars
+properties_index = allsopp_properties

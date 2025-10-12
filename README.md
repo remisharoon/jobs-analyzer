@@ -37,9 +37,18 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
   - The scraper attempts to capture posted/published timestamps (created/published/posted/added/discountAppliedAt) when present, normalizes them to `*_iso` fields, and includes them in ES and in the JSON export.
   - For efficiency, listings that already exist in ES (matched by document `_id` == `id`) are skipped to avoid re-fetching the detail page.
 
+### Allsopp & Allsopp Scraper Pipeline
+
+- The residential sales scraper lives in `src/plombery/allsopp_crs.py`. It follows the same pattern as the Crswtch pipeline: scrape paginated listings, enrich with detail-page data, push to Elasticsearch, and publish an R2 JSON snapshot.
+- Control the scraper via the `[allsopp]` block in `src/plombery/config/config.ini` (listing URL template, maximum page depth – default 100 – back-off timings, retry count, and ES index name).
+- The pipeline stops early when it encounters a listing that already exists in Elasticsearch, preventing redundant detail fetches once previously-seen properties resurface.
+- Output is written to `allsopp_listings.json` locally and uploaded to Cloudflare R2 under `data/allsopp_listings.json` using the credentials defined in the `[cloudflare]` section.
+- Run manually with `plombery run allsopp_pipeline` or rely on the scheduled trigger (05:30 Asia/Dubai).
+
 ### Testing
 
-- Run `python -m pytest tests/test_crswtch_parser.py` (or `python -m unittest`) to validate the Crswtch parsers against the embedded fixtures under `tests/fixtures/crswtch/` before deploying changes.
+- Run `python -m pytest tests/test_crswtch_parser.py` and `python -m pytest tests/test_allsopp_parser.py` (or `python -m unittest`) to validate the vehicle and property parsers against the embedded fixtures under `tests/fixtures`.
+- UI helpers leveraged by the Streamlit dashboards are covered in `tests/test_streamlit_ui.py`; run `python -m pytest tests/test_streamlit_ui.py` to confirm filtering logic stays intact.
 
 ### R2 Export
 
