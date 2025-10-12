@@ -414,7 +414,7 @@ def save_listings(listings):
 
 def build_url(page_n):
     # Get the datetime 2 days before now
-    two_days_before = datetime.now() - timedelta(days=2)
+    two_days_before = datetime.now() - timedelta(days=1)
 
     # Convert to epoch timestamp (int)
     two_days_epoch_timestamp = int(two_days_before.timestamp())
@@ -477,7 +477,7 @@ async def dbzl_car_data():
             print("Bulk result:", resp)
 
             # 👇 human-style pause: random 2–5 seconds
-            await asyncio.sleep(random.uniform(35, 55))
+            # await asyncio.sleep(random.uniform(35, 55))
         except Exception as e:
             print('************ ERROR *****************', e)
             break

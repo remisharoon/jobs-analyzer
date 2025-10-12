@@ -662,6 +662,7 @@ async def crswtch_car_data() -> None:
 
     all_rows: list[dict[str, Any]] = []
 
+    done = False
     for page in range(1, SETTINGS.pages + 1):
         url = SETTINGS.listing_url_template.format(page=page)
         logger.info("Fetching Crswtch listing page %s", url)
@@ -681,7 +682,8 @@ async def crswtch_car_data() -> None:
             rec_id = str(record.get('id')) if record.get('id') is not None else None
             if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
                 logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
-                continue
+                done = True
+                break
             if detail_url:
                 detail_payload = await _fetch_detail_with_retry(session, detail_url)
             else:
@@ -700,6 +702,9 @@ async def crswtch_car_data() -> None:
         csv_path = out_dir / f'listings_page_{page}.csv'
         df.to_csv(csv_path, index=False)
         logger.info("Saved raw listings to %s", csv_path)
+
+        if done:
+            break
 
     final_df = pd.DataFrame(all_rows)
     if final_df.empty:
