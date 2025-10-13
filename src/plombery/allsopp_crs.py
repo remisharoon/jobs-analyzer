@@ -414,6 +414,7 @@ async def allsopp_property_data() -> None:
     done = False
 
     for page in range(1, SETTINGS.pages + 1):
+        curr_rows: list[dict[str, Any]] = []
         url = SETTINGS.listing_url_template.format(page=page)
         logger.info("Fetching Allsopp listing page %s", url)
         listing_html = _fetch(session, url, retries=2)
@@ -438,8 +439,7 @@ async def allsopp_property_data() -> None:
                     record[key] = value
             record["source"] = "allsopp"
             all_rows.append(record)
-
-            await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
+            curr_rows.append(record)
 
         out_dir = Path("saved_data/allsopp")
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -450,23 +450,27 @@ async def allsopp_property_data() -> None:
         if done:
             break
 
+        curr_df = pd.DataFrame(curr_rows)
+        if curr_df.empty:
+            raise ValueError("No Allsopp records collected")
+
+        curr_df = curr_df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
+
+        logger.info("Indexing %d Allsopp documents into ES index %s", len(curr_df), SETTINGS.es_index)
+        bulk_resp = helpers.bulk(
+            es,
+            df_to_actions(curr_df, SETTINGS.es_index),
+            chunk_size=500,
+            request_timeout=120,
+            raise_on_error=False,
+            raise_on_exception=False,
+        )
+        logger.info("ES bulk response: %s", bulk_resp)
+
+        await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
+
     final_df = pd.DataFrame(all_rows)
-    if final_df.empty:
-        raise ValueError("No Allsopp records collected")
-
     final_df = final_df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
-
-    logger.info("Indexing %d Allsopp documents into ES index %s", len(final_df), SETTINGS.es_index)
-    bulk_resp = helpers.bulk(
-        es,
-        df_to_actions(final_df, SETTINGS.es_index),
-        chunk_size=500,
-        request_timeout=120,
-        raise_on_error=False,
-        raise_on_exception=False,
-    )
-    logger.info("ES bulk response: %s", bulk_resp)
-
     out_json = Path("allsopp_listings.json")
     final_df.to_json(out_json, orient="records", force_ascii=False)
     logger.info("Wrote %s with %d rows", out_json, len(final_df))
@@ -534,7 +538,7 @@ async def export_allsopp_json_to_r2():
     key = "data/allsopp_listings.json"
     s3.upload_file(
         Filename=str(out_path),
-        Bucket=cloudflare_config["BUCKET"],
+        Bucket=cloudflare_config["PROP_BUCKET"],
         Key=key,
         ExtraArgs={
             "ContentType": "application/json",
@@ -542,7 +546,7 @@ async def export_allsopp_json_to_r2():
             "CacheControl": "public, max-age=60",
         },
     )
-    logger.info("Uploaded to r2://%s/%s", cloudflare_config["BUCKET"], key)
+    logger.info("Uploaded to r2://%s/%s", cloudflare_config["PROP_BUCKET"], key)
 
 
 register_pipeline(
@@ -555,7 +559,7 @@ register_pipeline(
             name="Allsopp Daily",
             description="Run Allsopp scraper daily at 05:30 Dubai time",
             params=InputParams(),
-            schedule=CronTrigger(hour="5", minute="30", timezone="Asia/Dubai"),
+            schedule=CronTrigger(hour="4", minute="30", timezone="Asia/Dubai"),
         )
     ],
     params=InputParams,
