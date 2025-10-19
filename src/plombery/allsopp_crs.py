@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -35,13 +35,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
-class AllsoppSettings:
-    listing_url_template: str
-    pages: int
+class AllsoppBaseSettings:
     min_delay_seconds: float
     max_delay_seconds: float
     detail_retry_count: int
+
+
+@dataclass(slots=True)
+class AllsoppJobSettings:
+    name: str
+    listing_url_template: str
+    pages: int
     es_index: str
+    detail_segment: str
 
 
 config = read_config()
@@ -52,23 +58,77 @@ allsopp_section = config[CONFIG_SECTION]
 if not allsopp_section:
     raise KeyError("Missing [allsopp] section in config.ini")
 
-listing_url_template = allsopp_section["listing_url"]
-pages = int(allsopp_section.get("pages", "1"))
+_es_config = config["elasticsearch"]
+
 min_delay = float(allsopp_section.get("min_delay_seconds", "1.5"))
 max_delay = float(allsopp_section.get("max_delay_seconds", "4.0"))
 detail_retry_count = int(allsopp_section.get("detail_retry_count", "3"))
+default_pages = int(allsopp_section.get("pages", "1"))
+default_es_index = allsopp_section.get("es_index") or _es_config.get("properties_index", "allsopp_properties")
 
-_es_config = config["elasticsearch"]
-es_index = allsopp_section.get("es_index") or _es_config.get("properties_index", "allsopp_properties")
-
-SETTINGS = AllsoppSettings(
-    listing_url_template=listing_url_template,
-    pages=pages,
+BASE_SETTINGS = AllsoppBaseSettings(
     min_delay_seconds=min_delay,
     max_delay_seconds=max_delay,
     detail_retry_count=detail_retry_count,
-    es_index=es_index,
 )
+
+
+def _build_job_settings(
+    section: Mapping[str, str],
+    *,
+    name: str,
+    url_key: str,
+    pages_key: str,
+    es_index_key: str,
+    detail_segment: str,
+    default_pages_value: int,
+    default_index: str,
+) -> AllsoppJobSettings | None:
+    listing_url = section.get(url_key)
+    if not listing_url:
+        return None
+    pages_val = int(section.get(pages_key, str(default_pages_value)))
+    index_val = section.get(es_index_key) or default_index
+    return AllsoppJobSettings(
+        name=name,
+        listing_url_template=listing_url,
+        pages=pages_val,
+        es_index=index_val,
+        detail_segment=detail_segment,
+    )
+
+
+JOB_SETTINGS: list[AllsoppJobSettings] = []
+
+sales_job = _build_job_settings(
+    allsopp_section,
+    name="sales",
+    url_key="listing_url",
+    pages_key="pages",
+    es_index_key="es_index",
+    detail_segment="sales",
+    default_pages_value=default_pages,
+    default_index=default_es_index,
+)
+if sales_job:
+    JOB_SETTINGS.append(sales_job)
+
+lettings_job = _build_job_settings(
+    allsopp_section,
+    name="lettings",
+    url_key="lettings_listing_url",
+    pages_key="lettings_pages",
+    es_index_key="lettings_es_index",
+    detail_segment="lettings",
+    default_pages_value=default_pages,
+    default_index=default_es_index,
+)
+if lettings_job:
+    JOB_SETTINGS.append(lettings_job)
+
+if not JOB_SETTINGS:
+    raise KeyError("No Allsopp listing URLs configured (expected listing_url or lettings_listing_url)")
+
 
 es_hosts = _es_config["host"].split(",")
 es_user = _es_config["username"]
@@ -170,13 +230,32 @@ def _clean_location(value: Any) -> str | None:
     return text.lstrip(", ").strip()
 
 
-def _build_detail_url(reference: str | None) -> str | None:
+def _normalize_detail_segment(segment: str | None) -> str:
+    if not segment:
+        return "sales"
+    normalized = segment.strip().lower()
+    if normalized in {"rent", "rental", "lease"} or "lett" in normalized:
+        return "lettings"
+    return "sales"
+
+
+def _resolve_detail_segment(listing_type: Any, explicit: str | None) -> str:
+    if explicit:
+        return _normalize_detail_segment(explicit)
+    inferred = _normalize_scalar(listing_type)
+    if isinstance(inferred, str):
+        return _normalize_detail_segment(inferred)
+    return "sales"
+
+
+def _build_detail_url(reference: str | None, segment: str | None = None) -> str | None:
     if not reference:
         return None
-    return f"https://www.allsoppandallsopp.com/dubai/property/sales/{reference}"
+    path_segment = _normalize_detail_segment(segment)
+    return f"https://www.allsoppandallsopp.com/dubai/property/{path_segment}/{reference}"
 
 
-def parse_allsopp_listing_page(html_text: str) -> pd.DataFrame:
+def parse_allsopp_listing_page(html_text: str, detail_segment: str | None = None) -> pd.DataFrame:
     try:
         next_data = _load_next_data(html_text)
     except Exception as exc:  # pragma: no cover - handled in caller
@@ -200,6 +279,8 @@ def parse_allsopp_listing_page(html_text: str) -> pd.DataFrame:
         if not record_id:
             continue
         reference_number = fields.get("pba__broker_s_listing_id__c")
+        listing_type_value = fields.get("pba__listingtype__c")
+        resolved_segment = _resolve_detail_segment(listing_type_value, detail_segment)
         listing = {
             "id": str(record_id),
             "reference_number": reference_number,
@@ -210,16 +291,18 @@ def parse_allsopp_listing_page(html_text: str) -> pd.DataFrame:
             "listing_area": _clean_location(fields.get("listing_area")),
             "property_type": fields.get("property_type_website__c"),
             "listing_status": fields.get("pba__status__c"),
-            "listing_type": fields.get("pba__listingtype__c"),
+            "listing_type": listing_type_value,
+            "listing_category": resolved_segment,
             "business_type": fields.get("business_type_aa__c"),
             "latitude": _maybe_float(fields.get("pba__latitude_pb__c")),
             "longitude": _maybe_float(fields.get("pba__longitude_pb__c")),
             "listing_agent_name": fields.get("listing_agent_name"),
             "listing_agent_mobile": fields.get("listing_agent_mobile"),
             "listing_agent_email": fields.get("listing_agent_Email"),
+            "listing_agent_whatsapp": fields.get("listing_agent_Whatsapp"),
             "property_video": fields.get("property_video"),
             "images": fields.get("images"),
-            "detail_url": _build_detail_url(reference_number),
+            "detail_url": _build_detail_url(reference_number, resolved_segment),
             "name": fields.get("name"),
             "property_id": fields.get("pba__property__c"),
         }
@@ -360,21 +443,32 @@ def es_doc_exists(es: Elasticsearch, index: str, doc_id: str) -> bool:
         return False
 
 
-def df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
+def df_to_actions(df: pd.DataFrame, default_index: str | None) -> Iterable[dict[str, Any]]:
     clean = df.replace({np.nan: None})
     for record in clean.to_dict(orient="records"):
+        target_index = record.pop("_target_index", None) or default_index
+        if not target_index:
+            raise ValueError("Missing target index for Allsopp document")
         doc_id = record.get("id")
         if not doc_id:
             continue
         yield {
-            "_index": index,
+            "_index": target_index,
             "_id": doc_id,
             "_op_type": "index",
             "_source": record,
         }
 
 
-def _fetch(session: requests.Session, url: str, *, retries: int = 1, timeout: int = 20) -> str:
+def _fetch(
+    session: requests.Session,
+    url: str,
+    *,
+    retries: int = 1,
+    timeout: int = 20,
+    base_settings: AllsoppBaseSettings | None = None,
+) -> str:
+    settings = base_settings or BASE_SETTINGS
     last_exc: Exception | None = None
     for attempt in range(retries):
         try:
@@ -383,98 +477,134 @@ def _fetch(session: requests.Session, url: str, *, retries: int = 1, timeout: in
             return response.text
         except Exception as exc:  # pragma: no cover - networking best effort
             last_exc = exc
-            sleep_for = SETTINGS.min_delay_seconds * (attempt + 1)
+            sleep_for = settings.min_delay_seconds * (attempt + 1)
             logger.warning("Request failed (%s). Retrying in %.1fs", exc, sleep_for)
             time.sleep(sleep_for)
     raise RuntimeError(f"Failed to fetch {url}: {last_exc}")
 
 
-async def _fetch_detail_with_retry(session: requests.Session, url: str | None) -> dict[str, Any]:
+async def _fetch_detail_with_retry(
+    session: requests.Session,
+    url: str | None,
+    base_settings: AllsoppBaseSettings,
+) -> dict[str, Any]:
     if not url:
         return {}
-    for attempt in range(SETTINGS.detail_retry_count):
+    for attempt in range(base_settings.detail_retry_count):
         try:
-            html_text = _fetch(session, url, retries=1)
+            html_text = _fetch(session, url, retries=1, base_settings=base_settings)
             detail = parse_allsopp_detail_page(html_text)
             if detail:
                 return detail
         except Exception as exc:  # pragma: no cover - logged for observability
-            logger.warning("Detail fetch failed for %s (attempt %s/%s): %s", url, attempt + 1, SETTINGS.detail_retry_count, exc)
-        await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
+            logger.warning(
+                "Detail fetch failed for %s (attempt %s/%s): %s",
+                url,
+                attempt + 1,
+                base_settings.detail_retry_count,
+                exc,
+            )
+        await asyncio.sleep(random.uniform(base_settings.min_delay_seconds, base_settings.max_delay_seconds))
     return {}
+
+
+async def _scrape_job(
+    session: requests.Session,
+    es: Elasticsearch,
+    job: AllsoppJobSettings,
+) -> list[dict[str, Any]]:
+    ensure_index(es, job.es_index)
+
+    job_rows: list[dict[str, Any]] = []
+    done = False
+
+    for page in range(1, job.pages + 1):
+        url = job.listing_url_template.format(page=page)
+        logger.info("Fetching Allsopp %s listing page %s", job.name, url)
+        listing_html = _fetch(session, url, retries=2, base_settings=BASE_SETTINGS)
+
+        df = parse_allsopp_listing_page(listing_html, detail_segment=job.detail_segment)
+        if df.empty:
+            logger.info("No %s listings parsed from page %s, stopping job.", job.name, page)
+            break
+        logger.info("Parsed %d Allsopp %s listings from page %d", len(df), job.name, page)
+
+        for record in df.to_dict(orient="records"):
+            record.setdefault("listing_category", job.detail_segment)
+            record["listing_category"] = _normalize_detail_segment(record.get("listing_category"))
+            record["source_page"] = page
+            rec_id = str(record.get("id")) if record.get("id") is not None else None
+            if rec_id and es_doc_exists(es, job.es_index, rec_id):
+                logger.info("Encountered existing listing id=%s in job=%s; stopping pagination.", rec_id, job.name)
+                done = True
+                break
+
+            detail_payload = await _fetch_detail_with_retry(session, record.get("detail_url"), BASE_SETTINGS)
+            for key, value in detail_payload.items():
+                if value is not None:
+                    record[key] = value
+            record["source"] = "allsopp"
+            record["_target_index"] = job.es_index
+            job_rows.append(record)
+
+            await asyncio.sleep(random.uniform(BASE_SETTINGS.min_delay_seconds, BASE_SETTINGS.max_delay_seconds))
+
+        out_dir = Path("saved_data/allsopp") / job.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = out_dir / f"page_{page}.csv"
+        df.to_csv(csv_path, index=False)
+        logger.info("Saved raw %s listings to %s", job.name, csv_path)
+
+        if done:
+            break
+
+    return job_rows
 
 
 @task
 async def allsopp_property_data() -> None:
     session = requests.Session()
     es = es_client()
-    ensure_index(es, SETTINGS.es_index)
 
     all_rows: list[dict[str, Any]] = []
-    done = False
 
-    for page in range(1, SETTINGS.pages + 1):
-        curr_rows: list[dict[str, Any]] = []
-        url = SETTINGS.listing_url_template.format(page=page)
-        logger.info("Fetching Allsopp listing page %s", url)
-        listing_html = _fetch(session, url, retries=2)
+    for job in JOB_SETTINGS:
+        job_rows = await _scrape_job(session, es, job)
+        if not job_rows:
+            logger.info("No rows collected for Allsopp job %s", job.name)
+            continue
 
-        df = parse_allsopp_listing_page(listing_html)
-        if df.empty:
-            logger.info("No listings parsed from page %s, stopping.", page)
-            break
-        logger.info("Parsed %d Allsopp listings from page %d", len(df), page)
+        job_df = pd.DataFrame(job_rows)
+        job_df = job_df.drop_duplicates(subset=["id", "listing_category"], keep="last").reset_index(drop=True)
 
-        for record in df.to_dict(orient="records"):
-            record["source_page"] = page
-            rec_id = str(record.get("id")) if record.get("id") is not None else None
-            if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
-                logger.info("Encountered existing listing id=%s, stopping pagination.", rec_id)
-                done = True
-                break
-
-            detail_payload = await _fetch_detail_with_retry(session, record.get("detail_url"))
-            for key, value in detail_payload.items():
-                if value is not None:
-                    record[key] = value
-            record["source"] = "allsopp"
-            all_rows.append(record)
-            curr_rows.append(record)
-            await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
-
-        out_dir = Path("saved_data/allsopp")
-        out_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = out_dir / f"listings_page_{page}.csv"
-        df.to_csv(csv_path, index=False)
-        logger.info("Saved raw listings to %s", csv_path)
-
-        if done:
-            break
-
-        curr_df = pd.DataFrame(curr_rows)
-        if curr_df.empty:
-            raise ValueError("No Allsopp records collected")
-
-        curr_df = curr_df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
-
-        logger.info("Indexing %d Allsopp documents into ES index %s", len(curr_df), SETTINGS.es_index)
+        logger.info(
+            "Indexing %d Allsopp %s documents into ES index %s",
+            len(job_df),
+            job.name,
+            job.es_index,
+        )
         bulk_resp = helpers.bulk(
             es,
-            df_to_actions(curr_df, SETTINGS.es_index),
+            df_to_actions(job_df, default_index=None),
             chunk_size=500,
             request_timeout=120,
             raise_on_error=False,
             raise_on_exception=False,
         )
-        logger.info("ES bulk response: %s", bulk_resp)
+        logger.info("ES bulk response for job %s: %s", job.name, bulk_resp)
 
-        await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
+        all_rows.extend(job_rows)
 
     final_df = pd.DataFrame(all_rows)
-    final_df = final_df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
+    if final_df.empty:
+        raise ValueError("No Allsopp records collected across configured jobs")
+
+    final_df = final_df.drop_duplicates(subset=["id", "listing_category"], keep="last").reset_index(drop=True)
+
     out_json = Path("allsopp_listings.json")
-    final_df.to_json(out_json, orient="records", force_ascii=False)
-    logger.info("Wrote %s with %d rows", out_json, len(final_df))
+    json_df = final_df.drop(columns=["_target_index"], errors="ignore")
+    json_df.to_json(out_json, orient="records", force_ascii=False)
+    logger.info("Wrote %s with %d rows", out_json, len(json_df))
 
 
 class InputParams(BaseModel):
@@ -500,6 +630,8 @@ async def export_allsopp_json_to_r2():
         "total_area_sqft",
         "property_type",
         "listing_status",
+        "listing_type",
+        "listing_category",
         "listing_area",
         "detail_listing_area",
         "detail_description",
@@ -513,10 +645,14 @@ async def export_allsopp_json_to_r2():
 
     es = es_client()
 
-    if not es.indices.exists(index=SETTINGS.es_index):
-        raise SystemExit(f"Index not found: {SETTINGS.es_index}")
+    rows: list[dict[str, Any]] = []
+    indices = {job.es_index for job in JOB_SETTINGS}
+    for index in indices:
+        if not es.indices.exists(index=index):
+            logger.warning("Index not found: %s – skipping export for this index.", index)
+            continue
+        rows.extend(fetch_all_docs(es, index, fields))
 
-    rows = list(fetch_all_docs(es, SETTINGS.es_index, fields))
     if not rows:
         raise SystemExit("No documents returned from ES.")
 
@@ -536,10 +672,13 @@ async def export_allsopp_json_to_r2():
         aws_secret_access_key=cloudflare_config["SECRET_ACCESS_KEY"],
     )
 
+    bucket = cloudflare_config.get("PROP_BUCKET") or cloudflare_config.get("BUCKET")
+    if not bucket:
+        raise KeyError("Missing PROP_BUCKET/BUCKET configuration for Cloudflare export")
     key = "data/allsopp_listings.json"
     s3.upload_file(
         Filename=str(out_path),
-        Bucket=cloudflare_config["PROP_BUCKET"],
+        Bucket=bucket,
         Key=key,
         ExtraArgs={
             "ContentType": "application/json",
@@ -547,12 +686,12 @@ async def export_allsopp_json_to_r2():
             "CacheControl": "public, max-age=60",
         },
     )
-    logger.info("Uploaded to r2://%s/%s", cloudflare_config["PROP_BUCKET"], key)
+    logger.info("Uploaded to r2://%s/%s", bucket, key)
 
 
 register_pipeline(
     id="allsopp_pipeline",
-    description="Scrape Allsopp & Allsopp residential sale listings and index enriched data into Elasticsearch.",
+    description="Scrape Allsopp & Allsopp residential sale and rent listings, enrich with detail data, and export snapshots.",
     tasks=[allsopp_property_data, export_allsopp_json_to_r2],
     triggers=[
         Trigger(
@@ -560,7 +699,7 @@ register_pipeline(
             name="Allsopp Daily",
             description="Run Allsopp scraper daily at 05:30 Dubai time",
             params=InputParams(),
-            schedule=CronTrigger(hour="4", minute="30", timezone="Asia/Dubai"),
+            schedule=CronTrigger(hour="5", minute="30", timezone="Asia/Dubai"),
         )
     ],
     params=InputParams,

@@ -19,6 +19,9 @@ min_delay_seconds = 1.5
 max_delay_seconds = 4.0
 detail_retry_count = 3
 es_index = allsopp_properties
+lettings_listing_url = https://www.allsoppandallsopp.com/dubai/properties/residential/lettings/page-{page}
+lettings_pages = 100
+lettings_es_index = allsopp_properties
 
 [elasticsearch]
 carswitch_index = carswitch_cars

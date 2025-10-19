@@ -39,11 +39,11 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 
 ### Allsopp & Allsopp Scraper Pipeline
 
-- The residential sales scraper lives in `src/plombery/allsopp_crs.py`. It follows the same pattern as the Crswtch pipeline: scrape paginated listings, enrich with detail-page data, push to Elasticsearch, and publish an R2 JSON snapshot.
-- Control the scraper via the `[allsopp]` block in `src/plombery/config/config.ini` (listing URL template, maximum page depth – default 100 – back-off timings, retry count, and ES index name).
-- The pipeline stops early when it encounters a listing that already exists in Elasticsearch, preventing redundant detail fetches once previously-seen properties resurface.
-- Output is written to `allsopp_listings.json` locally and uploaded to Cloudflare R2 under `data/allsopp_listings.json` using the credentials defined in the `[cloudflare]` section.
-- Run manually with `plombery run allsopp_pipeline` or rely on the scheduled trigger (05:30 Asia/Dubai).
+- The residential scraper lives in `src/plombery/allsopp_crs.py`. It now harvests both **sales** and **lettings** inventories, enriches each fresh record with detail-page data, indexes them into Elasticsearch, and ships a combined JSON snapshot to Cloudflare R2.
+- Configure the behaviour via the `[allsopp]` block in `src/plombery/config/config.ini`. Use `listing_url`/`pages`/`es_index` for sales and `lettings_listing_url`/`lettings_pages`/`lettings_es_index` for rentals; the delay/retry parameters are shared across both modes.
+- Each mode short-circuits pagination when it encounters an ID already present in the respective Elasticsearch index, avoiding redundant detail fetches when older properties resurface.
+- Raw CSV dumps are kept under `saved_data/allsopp/<segment>/page_<n>.csv`, while the merged `allsopp_listings.json` (with a `listing_category` flag of `sales` or `lettings`) is written locally and uploaded to `data/allsopp_listings.json` in Cloudflare R2 using the `[cloudflare]` `PROP_BUCKET` (falling back to `BUCKET`) credentials.
+- Run the full pipeline with `plombery run allsopp_pipeline` or rely on the scheduled trigger at 05:30 Asia/Dubai.
 
 ### Testing
 

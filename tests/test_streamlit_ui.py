@@ -42,10 +42,10 @@ class JobsDataUITest(unittest.TestCase):
     def test_filter_invalid_records_drops_missing_and_other_titles(self) -> None:
         df = pd.DataFrame(
             [
-                {"country_inferred": "United Arab Emirates", "job_title_inferred": "Engineer"},
-                {"country_inferred": None, "job_title_inferred": "Engineer"},
-                {"country_inferred": "United Arab Emirates", "job_title_inferred": "Other"},
-                {"country_inferred": "None", "job_title_inferred": "Engineer"},
+                {"country_inferred": "United Arab Emirates", "job_title_inferred": "Engineer", "listing_category": "sales"},
+                {"country_inferred": None, "job_title_inferred": "Engineer", "listing_category": "sales"},
+                {"country_inferred": "United Arab Emirates", "job_title_inferred": "Other", "listing_category": "lettings"},
+                {"country_inferred": "None", "job_title_inferred": "Engineer", "listing_category": "sales"},
             ]
         )
 
@@ -53,6 +53,8 @@ class JobsDataUITest(unittest.TestCase):
 
         self.assertEqual(len(filtered), 1)
         self.assertListEqual(filtered["job_title_inferred"].tolist(), ["Engineer"])
+        self.assertIn("listing_category", filtered.columns)
+        self.assertListEqual(filtered["listing_category"].tolist(), ["sales"])
 
 
 if __name__ == "__main__":
