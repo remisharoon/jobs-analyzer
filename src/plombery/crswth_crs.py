@@ -660,10 +660,10 @@ async def crswtch_car_data() -> None:
     es = es_client()
     ensure_index(es, SETTINGS.es_index)
 
-    all_rows: list[dict[str, Any]] = []
 
-    done = False
+    dup_recs = 0
     for page in range(1, SETTINGS.pages + 1):
+        all_rows: list[dict[str, Any]] = []
         url = SETTINGS.listing_url_template.format(page=page)
         logger.info("Fetching Crswtch listing page %s", url)
         listing_html = _fetch(session, url, retries=2)
@@ -682,8 +682,7 @@ async def crswtch_car_data() -> None:
             rec_id = str(record.get('id')) if record.get('id') is not None else None
             if rec_id and es_doc_exists(es, SETTINGS.es_index, rec_id):
                 logger.info("Skip existing listing id=%s in index=%s", rec_id, SETTINGS.es_index)
-                done = True
-                break
+                dup_recs += 1
             if detail_url:
                 detail_payload = await _fetch_detail_with_retry(session, detail_url)
             else:
@@ -703,25 +702,26 @@ async def crswtch_car_data() -> None:
         df.to_csv(csv_path, index=False)
         logger.info("Saved raw listings to %s", csv_path)
 
-        if done:
+        final_df = pd.DataFrame(all_rows)
+        if final_df.empty:
+            raise ValueError("No Crswtch records collected")
+
+        final_df = final_df.drop_duplicates(subset=['id'], keep='last').reset_index(drop=True)
+
+        logger.info("Indexing %d Crswtch documents into ES index %s", len(final_df), SETTINGS.es_index)
+        bulk_resp = helpers.bulk(
+            es,
+            df_to_actions(final_df, SETTINGS.es_index),
+            chunk_size=500,
+            request_timeout=120,
+            raise_on_error=False,
+            raise_on_exception=False,
+        )
+        logger.info("ES bulk response: %s", bulk_resp)
+        if dup_recs > 50:
+            logger.info("Skipping remaining pages due to %d duplicate records", dup_recs)
             break
-
-    final_df = pd.DataFrame(all_rows)
-    if final_df.empty:
-        raise ValueError("No Crswtch records collected")
-
-    final_df = final_df.drop_duplicates(subset=['id'], keep='last').reset_index(drop=True)
-
-    logger.info("Indexing %d Crswtch documents into ES index %s", len(final_df), SETTINGS.es_index)
-    bulk_resp = helpers.bulk(
-        es,
-        df_to_actions(final_df, SETTINGS.es_index),
-        chunk_size=500,
-        request_timeout=120,
-        raise_on_error=False,
-        raise_on_exception=False,
-    )
-    logger.info("ES bulk response: %s", bulk_resp)
+        await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
 
 
 class InputParams(BaseModel):  # pragma: no cover - required by Register API but no runtime behaviour

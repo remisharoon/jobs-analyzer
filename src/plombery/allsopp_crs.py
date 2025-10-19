@@ -440,6 +440,7 @@ async def allsopp_property_data() -> None:
             record["source"] = "allsopp"
             all_rows.append(record)
             curr_rows.append(record)
+            await asyncio.sleep(random.uniform(SETTINGS.min_delay_seconds, SETTINGS.max_delay_seconds))
 
         out_dir = Path("saved_data/allsopp")
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -477,7 +477,7 @@ async def dbzl_car_data():
             print("Bulk result:", resp)
 
             # 👇 human-style pause: random 2–5 seconds
-            # await asyncio.sleep(random.uniform(35, 55))
+            await asyncio.sleep(random.uniform(55, 155))
         except Exception as e:
             print('************ ERROR *****************', e)
             break
