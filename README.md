@@ -45,10 +45,18 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 - Raw CSV dumps are kept under `saved_data/allsopp/<segment>/page_<n>.csv`, while the merged `allsopp_listings.json` (with a `listing_category` flag of `sales` or `lettings`) is written locally and uploaded to `data/allsopp_listings.json` in Cloudflare R2 using the `[cloudflare]` `PROP_BUCKET` (falling back to `BUCKET`) credentials.
 - Run the full pipeline with `plombery run allsopp_pipeline` or rely on the scheduled trigger at 05:30 Asia/Dubai.
 
+### DLD Open Data Pipeline
+
+- The Dubai Land Department open-data scraper lives in `src/plombery/dld_open_data.py`. It targets the CKAN datasets that power the public portal and currently supports the **Transactions**, **Rents**, **Projects**, **Valuations**, **Land**, **Building**, **Unit**, **Broker**, and **Developer** tabs.
+- Configure resource identifiers, primary date columns, and Elasticsearch indices inside the `[dld_open_data]` section of `src/plombery/config/config.ini`. Set `base_url` if the CKAN instance moves, and tune `page_size`, `lookback_days`, or the per-dataset `*_buffer_days` to control incremental fetch windows.
+- The scraper persists the most recent date per dataset in `saved_data/dld_open_data/state.json`, subtracting a small buffer (default three days) on every run to guard against late-arriving records. Artefacts are stored under `saved_data/dld_open_data/<dataset>/`, and records are indexed with `_dataset` metadata for downstream consumers.
+- Run `plombery run dld_open_data_pipeline` to ingest immediately or rely on the built-in trigger (06:00 Asia/Dubai). If the CKAN endpoint returns a reCAPTCHA challenge, the task will abort with a clear error so you can intervene manually.
+
 ### Testing
 
 - Run `python -m pytest tests/test_crswtch_parser.py` and `python -m pytest tests/test_allsopp_parser.py` (or `python -m unittest`) to validate the vehicle and property parsers against the embedded fixtures under `tests/fixtures`.
 - UI helpers leveraged by the Streamlit dashboards are covered in `tests/test_streamlit_ui.py`; run `python -m pytest tests/test_streamlit_ui.py` to confirm filtering logic stays intact.
+- Helper utilities for the DLD scraper are covered in `tests/test_dld_open_data.py`.
 
 ### R2 Export
 

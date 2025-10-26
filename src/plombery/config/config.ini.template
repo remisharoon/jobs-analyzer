@@ -26,3 +26,38 @@ lettings_es_index = allsopp_properties
 [elasticsearch]
 carswitch_index = carswitch_cars
 properties_index = allsopp_properties
+
+[dld_open_data]
+base_url = https://opendata.dubailand.gov.ae/api/3/action
+page_size = 500
+lookback_days = 30
+buffer_days = 3
+timeout_seconds = 30
+# Populate the resource IDs, date fields, and target indices below.
+transactions_resource_id =
+transactions_date_field =
+transactions_es_index = dld_transactions
+rents_resource_id =
+rents_date_field =
+rents_es_index = dld_rents
+projects_resource_id =
+projects_date_field =
+projects_es_index = dld_projects
+valuations_resource_id =
+valuations_date_field =
+valuations_es_index = dld_valuations
+land_resource_id =
+land_date_field =
+land_es_index = dld_land
+building_resource_id =
+building_date_field =
+building_es_index = dld_buildings
+unit_resource_id =
+unit_date_field =
+unit_es_index = dld_units
+broker_resource_id =
+broker_date_field =
+broker_es_index = dld_brokers
+developer_resource_id =
+developer_date_field =
+developer_es_index = dld_developers
