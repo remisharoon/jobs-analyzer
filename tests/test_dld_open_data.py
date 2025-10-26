@@ -44,12 +44,14 @@ from plombery.dld_open_data import (  # noqa: E402
     BASE_SETTINGS,
     DatasetConfig,
     RecaptchaBlockedError,
+    _build_request_headers,
     _compute_start_date,
     _download_dataset,
     _fetch_page,
     _extract_max_date_from_df,
     _find_dataset_node,
     _json_payload_to_df,
+    _create_http_session,
     _load_next_data,
     _prepare_dataset_url,
     _table_to_dataframe,
@@ -90,10 +92,17 @@ SAMPLE_NEXT_DATA = {
 
 
 class DummyResponse:
-    def __init__(self, text: str, url: str, content_type: str = "application/json") -> None:
+    def __init__(
+        self,
+        text: str,
+        url: str,
+        content_type: str = "application/json",
+        status_code: int = 200,
+    ) -> None:
         self._text = text
         self.url = url
         self.headers = {"Content-Type": content_type}
+        self.status_code = status_code
 
     @property
     def text(self) -> str:
@@ -168,6 +177,33 @@ class DLDOpenDataTests(unittest.TestCase):
         df = _json_payload_to_df(payload)
         self.assertEqual(len(df), 1)
 
+    def test_build_request_headers_contains_modern_fields(self) -> None:
+        headers = _build_request_headers()
+        self.assertIn("Sec-Ch-Ua", headers)
+        self.assertIn("User-Agent", headers)
+        self.assertEqual(headers["Referer"], BASE_SETTINGS.page_url)
+
+    def test_create_http_session_prefers_curl_cffi_when_available(self) -> None:
+        fake_session = mock.Mock()
+        fake_session.headers = {}
+
+        fake_module = mock.Mock()
+        fake_module.Session.return_value = fake_session
+
+        with mock.patch("plombery.dld_open_data.curl_requests", fake_module):
+            session = _create_http_session()
+
+        fake_module.Session.assert_called_once()
+        self.assertIs(session, fake_session)
+        self.assertTrue(hasattr(session, "h2"))
+
+    def test_create_http_session_falls_back_when_curl_missing(self) -> None:
+        with mock.patch("plombery.dld_open_data.curl_requests", None):
+            session = _create_http_session()
+        # ``requests.Session`` exposes ``request`` and ``headers`` attributes.
+        self.assertTrue(hasattr(session, "request"))
+        self.assertTrue(hasattr(session, "headers"))
+
     @mock.patch("plombery.dld_open_data.time.sleep", autospec=True)
     def test_download_dataset_detects_recaptcha(self, sleep_mock: mock.Mock) -> None:
         session = requests_session_with_response(
@@ -175,6 +211,20 @@ class DLDOpenDataTests(unittest.TestCase):
                 "<html><body><p>I'm not a robot</p></body></html>",
                 url="https://example.com",  # type: ignore[arg-type]
                 content_type="text/html",
+            )
+        )
+        with self.assertRaises(RecaptchaBlockedError):
+            _download_dataset(session, "https://example.com/api")
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    @mock.patch("plombery.dld_open_data.time.sleep", autospec=True)
+    def test_download_dataset_detects_http_block(self, sleep_mock: mock.Mock) -> None:
+        session = requests_session_with_response(
+            DummyResponse(
+                json.dumps({"status": "blocked"}),
+                url="https://example.com/api",  # type: ignore[arg-type]
+                content_type="application/json",
+                status_code=403,
             )
         )
         with self.assertRaises(RecaptchaBlockedError):
@@ -252,7 +302,7 @@ class DLDOpenDataTests(unittest.TestCase):
 
         prepared_url_holder: list[str] = []
 
-        def fake_get(url: str, timeout: int, headers: dict[str, str]):
+        def fake_get(url: str, timeout: int, headers: dict[str, str], **_: Any):
             prepared_url_holder.append(url)
             return DummyResponse(json.dumps(payload), url=url)
 
@@ -291,7 +341,7 @@ class DLDIntegrationTest(unittest.TestCase):
             }
         }
 
-        def fake_get(url: str, timeout: int, headers: dict[str, str]):
+        def fake_get(url: str, timeout: int, headers: dict[str, str], **_: Any):
             if url == BASE_SETTINGS.page_url:
                 return DummyResponse(html, url=url, content_type="text/html")
             payload = dataset_payloads.get(url)
@@ -303,7 +353,7 @@ class DLDIntegrationTest(unittest.TestCase):
         session.get.side_effect = fake_get
 
         # Mock dependencies so we do not write to ES or disk.
-        with mock.patch("plombery.dld_open_data.requests.Session", return_value=session), \
+        with mock.patch("plombery.dld_open_data._create_http_session", return_value=session), \
             mock.patch("plombery.dld_open_data.es_client"), \
             mock.patch("plombery.dld_open_data.ensure_index"), \
             mock.patch("plombery.dld_open_data.helpers.bulk"), \

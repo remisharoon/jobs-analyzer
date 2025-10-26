@@ -12,6 +12,7 @@ streamlit-aggrid
 wordcloud
 plombery
 requests-html
+curl-cffi>=0.5.10
 lxml[html_clean]
 marimo
 json-repair

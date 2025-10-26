@@ -26,12 +26,18 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+import random
+from typing import Any, Iterable, Iterator, Mapping, Sequence, Protocol, runtime_checkable
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import numpy as np
 import pandas as pd
 import requests
+
+try:  # pragma: no cover - optional dependency for modern TLS fingerprints
+    from curl_cffi import requests as curl_requests
+except Exception:  # pragma: no cover - gracefully degrade if curl_cffi unavailable
+    curl_requests = None
 from apscheduler.triggers.cron import CronTrigger
 from elasticsearch import Elasticsearch, helpers
 from pydantic import BaseModel
@@ -73,8 +79,29 @@ REQUEST_HEADERS = {
     "Connection": "keep-alive",
 }
 
+MODERN_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.78 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/123.0.6312.122 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.6422.60 Safari/537.36",
+)
+
 RECAPTCHA_MAX_RETRIES = 3
 RECAPTCHA_BACKOFF_SECONDS = 30
+
+_secure_rng = random.SystemRandom()
+
+
+@runtime_checkable
+class HttpGetSession(Protocol):
+    """Protocol describing the ultra-modern session interface used in this module."""
+
+    def get(self, url: str, *, timeout: int, headers: Mapping[str, str]) -> requests.Response:
+        ...
 
 
 @dataclass(slots=True)
@@ -377,24 +404,60 @@ def _prepare_dataset_url(url: str, start_date: date, end_date: date) -> str:
     return urlunparse(rebuilt)
 
 
+def _build_request_headers(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a fresh header dictionary with realistic Chrome fingerprint values."""
+
+    headers = dict(REQUEST_HEADERS)
+    headers["User-Agent"] = _secure_rng.choice(MODERN_USER_AGENTS)
+    headers.update(
+        {
+            "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="124", "Chromium";v="124"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "Referer": BASE_SETTINGS.page_url,
+        }
+    )
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 def _check_recaptcha(response: requests.Response) -> None:
-    if "text/html" in response.headers.get("Content-Type", ""):
+    content_type = response.headers.get("Content-Type", "")
+    status_blocked = response.status_code in {403, 429}
+    if status_blocked and "text/html" not in content_type.lower():
+        raise RecaptchaBlockedError(
+            "Blocked by access control when fetching DLD data (HTTP %s)." % response.status_code
+        )
+    if "text/html" in content_type:
         snippet = response.text.lower()
-        if "i'm not a robot" in snippet or "recaptcha" in snippet:
+        if (
+            "i'm not a robot" in snippet
+            or "recaptcha" in snippet
+            or "verify you are human" in snippet
+            or "error 1020" in snippet
+            or "temporarily blocked" in snippet
+        ):
             raise RecaptchaBlockedError(
                 "Blocked by reCAPTCHA challenge when fetching DLD data."
             )
 
 
 def _get_with_recaptcha_retry(
-    session: requests.Session,
+    session: HttpGetSession,
     url: str,
     *,
     timeout: int,
-    headers: Mapping[str, str],
+    extra_headers: Mapping[str, str] | None = None,
 ) -> requests.Response:
     last_error: RecaptchaBlockedError | None = None
     for attempt in range(RECAPTCHA_MAX_RETRIES):
+        headers = _build_request_headers(extra_headers)
         response = session.get(url, timeout=timeout, headers=headers)
         try:
             _check_recaptcha(response)
@@ -419,15 +482,32 @@ def _get_with_recaptcha_retry(
     raise RuntimeError("Unexpected failure fetching URL without response or error")
 
 
+def _create_http_session() -> HttpGetSession:
+    """Create an HTTP session with ultra-modern TLS and HTTP/2 support when available."""
+
+    if curl_requests is not None:
+        try:
+            session = curl_requests.Session()
+            session.impersonate = "chrome124"
+            session.headers.update(_build_request_headers())
+            session.h2 = True  # prefer HTTP/2 for modern fingerprints
+            return session  # type: ignore[return-value]
+        except Exception:  # pragma: no cover - runtime defensive fallback
+            logger.exception("Failed to initialise curl_cffi session; falling back to requests.")
+    session = requests.Session()
+    session.headers.update(_build_request_headers())
+    return session
+
+
 def _download_dataset(
-    session: requests.Session,
+    session: HttpGetSession,
     url: str,
 ) -> tuple[pd.DataFrame, str]:
     response = _get_with_recaptcha_retry(
         session,
         url,
         timeout=BASE_SETTINGS.request_timeout,
-        headers=REQUEST_HEADERS,
+        extra_headers={"Accept": "application/json, text/csv;q=0.9, */*;q=0.8"},
     )
     content_type = response.headers.get("Content-Type", "").lower()
     source_url = response.url
@@ -508,12 +588,12 @@ def ensure_index(es: Elasticsearch, index: str) -> None:
         es.indices.create(index=index, body=mapping)
 
 
-def _fetch_page(session: requests.Session) -> dict[str, Any]:
+def _fetch_page(session: HttpGetSession) -> dict[str, Any]:
     response = _get_with_recaptcha_retry(
         session,
         BASE_SETTINGS.page_url,
         timeout=BASE_SETTINGS.request_timeout,
-        headers=REQUEST_HEADERS,
+        extra_headers={"Accept": "text/html,application/xhtml+xml"},
     )
     response.raise_for_status()
     return _load_next_data(response.text)
@@ -584,7 +664,7 @@ def _prepare_dataframe(
 
 
 def _fetch_dataset(
-    session: requests.Session,
+    session: HttpGetSession,
     next_data: Mapping[str, Any],
     cfg: DatasetConfig,
     start_date: date,
@@ -615,7 +695,7 @@ async def dld_open_data_pipeline() -> None:
         raise RuntimeError("No DLD Open Data datasets configured. Please populate config.ini [dld_open_data].")
 
     state = _load_state()
-    session = requests.Session()
+    session = _create_http_session()
     next_data = _fetch_page(session)
     es = es_client()
 
