@@ -1,20 +1,32 @@
-"""DLD Open Data scraper and pipeline.
+"""DLD Open Data scraper and pipeline (web version).
 
-This module harvests structured datasets exposed through the Dubai Land
-Department's open-data CKAN instance.  Similar to the Allsopp scraper, it
-fetches incremental updates, normalises the payload, and indexes them into
-Elasticsearch before exporting local artefacts.
+This module scrapes Dubai Land Department's (DLD) "Real Estate Data" portal
+(`https://dubailand.gov.ae/en/open-data/real-estate-data/`).  The site is a
+Next.js application that exposes all dataset payloads through the page's
+``__NEXT_DATA__`` bootstrap JSON as well as dataset-specific download links.
+
+The scraper mirrors the patterns used by the ``allsopp_crs`` module: it fetches
+the page HTML, extracts structured data, normalises the payload, and indexes
+each dataset into Elasticsearch before persisting CSV artefacts and maintaining
+incremental state on disk.
+
+The site occasionally returns a reCAPTCHA challenge when it suspects bot
+behaviour.  The scraper detects those HTML responses and raises a dedicated
+``RecaptchaBlockedError`` so the scheduler can alert operators.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping, Sequence
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import numpy as np
 import pandas as pd
@@ -24,7 +36,11 @@ from elasticsearch import Elasticsearch, helpers
 from pydantic import BaseModel
 
 from plombery import Trigger, register_pipeline, task
-from config import read_config
+
+try:  # pragma: no cover - fallback for local test environments
+    from config import read_config
+except ModuleNotFoundError:  # pragma: no cover
+    from plombery.config import read_config
 
 
 logger = logging.getLogger(__name__)
@@ -43,10 +59,23 @@ DATASET_KEYS = {
 }
 
 
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/json,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Connection": "keep-alive",
+}
+
+
 @dataclass(slots=True)
 class DLDBaseSettings:
-    api_base_url: str
-    page_size: int
+    page_url: str
     lookback_days: int
     buffer_days: int
     request_timeout: int
@@ -56,7 +85,7 @@ class DLDBaseSettings:
 class DatasetConfig:
     key: str
     label: str
-    resource_id: str
+    slug: str
     date_field: str
     es_index: str
     buffer_days: int | None = None
@@ -65,6 +94,7 @@ class DatasetConfig:
 CONFIG_SECTION = "dld_open_data"
 
 config = read_config()
+
 try:
     dld_section: Mapping[str, str] = config[CONFIG_SECTION]
 except KeyError:
@@ -84,8 +114,10 @@ def _get_int(section: Mapping[str, str], key: str, default: int) -> int:
 
 
 BASE_SETTINGS = DLDBaseSettings(
-    api_base_url=dld_section.get("base_url", "https://opendata.dubailand.gov.ae/api/3/action"),
-    page_size=_get_int(dld_section, "page_size", 500),
+    page_url=dld_section.get(
+        "page_url",
+        "https://dubailand.gov.ae/en/open-data/real-estate-data/",
+    ),
     lookback_days=_get_int(dld_section, "lookback_days", 30),
     buffer_days=_get_int(dld_section, "buffer_days", 3),
     request_timeout=_get_int(dld_section, "timeout_seconds", 30),
@@ -93,23 +125,27 @@ BASE_SETTINGS = DLDBaseSettings(
 
 
 def _build_dataset_config(key: str, label: str, section: Mapping[str, str]) -> DatasetConfig | None:
-    resource_id = section.get(f"{key}_resource_id")
     date_field = section.get(f"{key}_date_field")
     es_index = section.get(f"{key}_es_index") or es_section.get("dld_index")
-    if not resource_id or not date_field or not es_index:
-        logger.debug("Skipping dataset %s: missing resource_id/date_field/index", key)
+    if not date_field or not es_index:
+        logger.debug("Skipping dataset %s: missing date_field/index", key)
         return None
+    slug = section.get(f"{key}_slug") or key
     buffer_days: int | None = None
     raw_buffer = section.get(f"{key}_buffer_days")
     if raw_buffer:
         try:
             buffer_days = int(raw_buffer)
         except ValueError:
-            logger.warning("Invalid %s_buffer_days value '%s'; falling back to defaults.", key, raw_buffer)
+            logger.warning(
+                "Invalid %s_buffer_days value '%s'; falling back to defaults.",
+                key,
+                raw_buffer,
+            )
     return DatasetConfig(
         key=key,
         label=label,
-        resource_id=resource_id,
+        slug=slug.lower(),
         date_field=date_field,
         es_index=es_index,
         buffer_days=buffer_days,
@@ -117,12 +153,18 @@ def _build_dataset_config(key: str, label: str, section: Mapping[str, str]) -> D
 
 
 DATASET_CONFIGS: list[DatasetConfig] = [
-    cfg for key, label in DATASET_KEYS.items() if (cfg := _build_dataset_config(key, label, dld_section))
+    cfg
+    for key, label in DATASET_KEYS.items()
+    if (cfg := _build_dataset_config(key, label, dld_section))
 ]
 
 
 STATE_PATH = Path("saved_data/dld_open_data/state.json")
 STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+class RecaptchaBlockedError(RuntimeError):
+    """Raised when the site responds with a reCAPTCHA challenge."""
 
 
 def _load_state(path: Path = STATE_PATH) -> dict[str, Any]:
@@ -147,19 +189,32 @@ def _parse_date(value: Any) -> date | None:
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, str):
-        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        try:
+            return datetime.fromisoformat(cleaned).date()
+        except ValueError:
+            pass
+        for fmt in (
+            "%Y-%m-%d",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%d/%m/%Y",
+            "%m/%d/%Y",
+        ):
             try:
-                return datetime.strptime(value[: len(fmt)], fmt).date()
+                return datetime.strptime(cleaned[: len(fmt)], fmt).date()
             except ValueError:
                 continue
     return None
 
 
-def _compute_start_date(cfg: DatasetConfig, state: dict[str, Any]) -> date:
+def _compute_start_date(cfg: DatasetConfig, state: Mapping[str, Any]) -> date:
     buffer_days = cfg.buffer_days or BASE_SETTINGS.buffer_days
     dataset_state = state.get(cfg.key, {})
     prev_max = dataset_state.get("max_date")
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     if prev_max:
         prev_date = _parse_date(prev_max) or (today - timedelta(days=BASE_SETTINGS.lookback_days))
         start = prev_date - timedelta(days=buffer_days)
@@ -170,8 +225,205 @@ def _compute_start_date(cfg: DatasetConfig, state: dict[str, Any]) -> date:
     return start
 
 
-class RecaptchaBlockedError(RuntimeError):
-    """Raised when the API responds with reCAPTCHA / anti-bot HTML."""
+def _load_next_data(html_text: str) -> dict[str, Any]:
+    marker = '<script id="__NEXT_DATA__"'
+    idx = html_text.find(marker)
+    if idx == -1:
+        raise ValueError("Unable to locate __NEXT_DATA__ script")
+    start = html_text.find(">", idx)
+    if start == -1:
+        raise ValueError("Malformed __NEXT_DATA__ script tag")
+    start += 1
+    end = html_text.find("</script>", start)
+    if end == -1:
+        raise ValueError("Unable to locate end of __NEXT_DATA__ script")
+    payload = html_text[start:end]
+    return json.loads(payload)
+
+
+def _walk_json(node: Any) -> Iterator[Any]:
+    """Breadth-first traversal yielding every nested mapping/list element."""
+
+    queue: deque[Any] = deque([node])
+    while queue:
+        current = queue.popleft()
+        yield current
+        if isinstance(current, Mapping):
+            queue.extend(current.values())
+        elif isinstance(current, Sequence) and not isinstance(current, (str, bytes, bytearray)):
+            queue.extend(current)
+
+
+def _find_dataset_node(next_data: Mapping[str, Any], cfg: DatasetConfig) -> Mapping[str, Any] | None:
+    target_slug = cfg.slug.lower()
+    target_label = cfg.label.lower()
+    for node in _walk_json(next_data):
+        if not isinstance(node, Mapping):
+            continue
+        slug = str(node.get("slug") or node.get("key") or node.get("id") or "").lower()
+        title = str(node.get("title") or node.get("name") or node.get("label") or "").lower()
+        if slug == target_slug or title == target_label:
+            return node
+    return None
+
+
+def _extract_table_node(node: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if "table" in node and isinstance(node["table"], Mapping):
+        return node["table"]
+    for key in ("tableData", "grid", "dataTable"):
+        value = node.get(key)
+        if isinstance(value, Mapping):
+            return value
+    for value in node.values():
+        if isinstance(value, Mapping):
+            result = _extract_table_node(value)
+            if result is not None:
+                return result
+    return None
+
+
+def _normalise_columns(columns: Any) -> list[str]:
+    names: list[str] = []
+    if isinstance(columns, Sequence) and not isinstance(columns, (str, bytes, bytearray)):
+        for column in columns:
+            if isinstance(column, Mapping):
+                candidate = (
+                    column.get("dataIndex")
+                    or column.get("key")
+                    or column.get("field")
+                    or column.get("id")
+                    or column.get("name")
+                    or column.get("title")
+                    or column.get("label")
+                )
+                if candidate:
+                    names.append(str(candidate))
+                    continue
+            elif isinstance(column, str):
+                names.append(column)
+        if names:
+            return names
+    return []
+
+
+def _table_to_dataframe(table: Mapping[str, Any]) -> pd.DataFrame:
+    columns = _normalise_columns(table.get("columns") or table.get("headers"))
+    data = table.get("rows") or table.get("data") or table.get("body") or []
+    records: list[dict[str, Any]] = []
+    if isinstance(data, Mapping):
+        # Some endpoints wrap rows in {"items": [...]}
+        for key in ("items", "rows", "data"):
+            maybe_rows = data.get(key)
+            if isinstance(maybe_rows, Sequence) and not isinstance(maybe_rows, (str, bytes, bytearray)):
+                data = maybe_rows
+                break
+    if isinstance(data, Sequence) and not isinstance(data, (str, bytes, bytearray)):
+        for row in data:
+            if isinstance(row, Mapping):
+                records.append(dict(row))
+            elif isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
+                record: dict[str, Any] = {}
+                for idx, value in enumerate(row):
+                    key = columns[idx] if idx < len(columns) else f"column_{idx}"
+                    record[key] = value
+                records.append(record)
+    return pd.DataFrame.from_records(records)
+
+
+def _extract_data_url(node: Mapping[str, Any]) -> str | None:
+    for key in ("downloadUrl", "dataUrl", "csvUrl", "apiUrl"):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _prepare_dataset_url(url: str, start_date: date, end_date: date) -> str:
+    from_str = start_date.strftime("%Y-%m-%d")
+    to_str = end_date.strftime("%Y-%m-%d")
+    replacements = {
+        "{fromDate}": from_str,
+        "{FromDate}": from_str,
+        "{fromdate}": from_str,
+        "{toDate}": to_str,
+        "{ToDate}": to_str,
+        "{todate}": to_str,
+    }
+    for placeholder, value in replacements.items():
+        if placeholder in url:
+            url = url.replace(placeholder, value)
+
+    parsed = urlparse(url)
+    query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    updated = False
+    for key in list(query_params.keys()):
+        lower = key.lower()
+        if lower in {"fromdate", "from", "from_date", "start", "startdate"}:
+            query_params[key] = from_str
+            updated = True
+        elif lower in {"todate", "to", "to_date", "end", "enddate"}:
+            query_params[key] = to_str
+            updated = True
+    if not updated:
+        # append sensible defaults
+        query_params.setdefault("FromDate", from_str)
+        query_params.setdefault("ToDate", to_str)
+
+    rebuilt = parsed._replace(query=urlencode(query_params, doseq=True))
+    return urlunparse(rebuilt)
+
+
+def _check_recaptcha(response: requests.Response) -> None:
+    if "text/html" in response.headers.get("Content-Type", ""):
+        snippet = response.text.lower()
+        if "i'm not a robot" in snippet or "recaptcha" in snippet:
+            raise RecaptchaBlockedError(
+                "Blocked by reCAPTCHA challenge when fetching DLD data."
+            )
+
+
+def _download_dataset(
+    session: requests.Session,
+    url: str,
+) -> tuple[pd.DataFrame, str]:
+    response = session.get(url, timeout=BASE_SETTINGS.request_timeout, headers=REQUEST_HEADERS)
+    _check_recaptcha(response)
+    content_type = response.headers.get("Content-Type", "").lower()
+    source_url = response.url
+    if "application/json" in content_type or response.text.strip().startswith("{"):
+        data = response.json()
+        df = _json_payload_to_df(data)
+    elif "text/csv" in content_type or content_type.endswith("/csv"):
+        df = pd.read_csv(io.StringIO(response.text))
+    else:
+        # Some endpoints return CSV without the correct header
+        try:
+            df = pd.read_csv(io.StringIO(response.text))
+        except Exception as exc:  # pragma: no cover - defensive
+            raise RuntimeError(f"Unsupported response format from {url}: {content_type}") from exc
+    return df, source_url
+
+
+def _json_payload_to_df(payload: Any) -> pd.DataFrame:
+    if isinstance(payload, Mapping):
+        if "columns" in payload and any(k in payload for k in ("rows", "data")):
+            return _table_to_dataframe(payload)
+        for key in ("table", "tableData", "grid", "dataTable"):
+            if key in payload and isinstance(payload[key], Mapping):
+                return _table_to_dataframe(payload[key])
+        for key in ("data", "rows", "items", "records"):
+            value = payload.get(key)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+                return pd.DataFrame.from_records(value)
+        # Recursively search for a table definition
+        for value in payload.values():
+            if isinstance(value, (Mapping, list, tuple)):
+                df = _json_payload_to_df(value)
+                if not df.empty:
+                    return df
+    elif isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        return pd.DataFrame.from_records(payload)
+    return pd.DataFrame()
 
 
 def es_client() -> Elasticsearch:
@@ -186,7 +438,7 @@ def es_client() -> Elasticsearch:
     try:
         info = es.info()
         logger.info("Connected to ES: %s", info.get("cluster_name", "unknown"))
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:  # pragma: no cover - connection failures shouldn't break scraping
         logger.warning("Failed to fetch ES info: %s", exc)
     return es
 
@@ -215,73 +467,33 @@ def ensure_index(es: Elasticsearch, index: str) -> None:
         es.indices.create(index=index, body=mapping)
 
 
-def _build_sql(cfg: DatasetConfig, start_date: date, offset: int, limit: int) -> str:
-    start_str = start_date.strftime("%Y-%m-%d")
-    resource = cfg.resource_id.replace('"', '""')
-    date_field = cfg.date_field.replace('"', '""')
-    return (
-        f'SELECT * FROM "{resource}" '
-        f'WHERE "{date_field}" >= \'{start_str}\' '
-        f'ORDER BY "{date_field}" ASC '
-        f'LIMIT {limit} OFFSET {offset}'
-    )
-
-
-RequestCallable = Callable[[Mapping[str, str]], requests.Response]
-
-
-def _request(
-    session: requests.Session,
-    url: str,
-    params: Mapping[str, str],
-) -> requests.Response:
+def _fetch_page(session: requests.Session) -> dict[str, Any]:
     response = session.get(
-        url,
-        params=params,
+        BASE_SETTINGS.page_url,
         timeout=BASE_SETTINGS.request_timeout,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; JobsAnalyzerBot/1.0)"},
+        headers=REQUEST_HEADERS,
     )
-    if "text/html" in response.headers.get("Content-Type", ""):
-        text = response.text.lower()
-        if "i'm not a robot" in text or "recaptcha" in text:
-            raise RecaptchaBlockedError("Blocked by reCAPTCHA. Manual intervention required.")
+    _check_recaptcha(response)
     response.raise_for_status()
-    return response
+    return _load_next_data(response.text)
 
 
-def _fetch_dataset_records(
-    session: requests.Session,
-    cfg: DatasetConfig,
-    start_date: date,
-) -> list[dict[str, Any]]:
-    sql_endpoint = f"{BASE_SETTINGS.api_base_url.rstrip('/')}/datastore_search_sql"
-    records: list[dict[str, Any]] = []
-    offset = 0
-    while True:
-        sql = _build_sql(cfg, start_date, offset, BASE_SETTINGS.page_size)
-        logger.debug("Fetching %s batch offset=%s", cfg.key, offset)
-        resp = _request(session, sql_endpoint, {"sql": sql})
-        payload = resp.json()
-        if not payload.get("success"):
-            raise RuntimeError(f"CKAN API returned error for dataset {cfg.key}: {payload}")
-        batch = payload.get("result", {}).get("records", [])
-        if not batch:
-            break
-        records.extend(batch)
-        if len(batch) < BASE_SETTINGS.page_size:
-            break
-        offset += BASE_SETTINGS.page_size
-    return records
+def _ensure_date_column(df: pd.DataFrame, desired: str) -> str:
+    if desired in df.columns:
+        return desired
+    lower_lookup = {str(col).lower(): col for col in df.columns if isinstance(col, str)}
+    lowered = desired.lower()
+    if lowered in lower_lookup:
+        return lower_lookup[lowered]
+    raise KeyError(f"Unable to locate date column '{desired}' in dataset columns: {list(df.columns)}")
 
 
-def _extract_max_date(records: Iterable[dict[str, Any]], date_field: str) -> date | None:
-    max_dt: date | None = None
-    for record in records:
-        value = record.get(date_field) or record.get(date_field.lower())
-        parsed = _parse_date(value)
-        if parsed and (max_dt is None or parsed > max_dt):
-            max_dt = parsed
-    return max_dt
+def _extract_max_date_from_df(df: pd.DataFrame, date_column: str) -> date | None:
+    parsed_dates = df[date_column].map(_parse_date)
+    parsed_dates = parsed_dates.dropna()
+    if parsed_dates.empty:
+        return None
+    return max(parsed_dates)
 
 
 def _df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
@@ -308,10 +520,52 @@ def _df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
 def _persist_artifacts(cfg: DatasetConfig, df: pd.DataFrame) -> Path:
     out_dir = Path("saved_data/dld_open_data") / cfg.key
     out_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     csv_path = out_dir / f"{cfg.key}_{timestamp}.csv"
     df.to_csv(csv_path, index=False)
     return csv_path
+
+
+def _prepare_dataframe(
+    df: pd.DataFrame,
+    cfg: DatasetConfig,
+    source_url: str,
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+    date_column = _ensure_date_column(df, cfg.date_field)
+    df["_dataset"] = cfg.key
+    df["_source_url"] = source_url
+    df["_extracted_at_iso"] = datetime.now(timezone.utc).isoformat()
+    # ensure date column convertible to string for CSV/ES
+    df[date_column] = df[date_column].apply(lambda v: v.isoformat() if isinstance(v, date) else v)
+    return df
+
+
+def _fetch_dataset(
+    session: requests.Session,
+    next_data: Mapping[str, Any],
+    cfg: DatasetConfig,
+    start_date: date,
+    end_date: date,
+) -> tuple[pd.DataFrame, str]:
+    node = _find_dataset_node(next_data, cfg)
+    if node is None:
+        raise KeyError(f"Unable to locate dataset '{cfg.label}' in page data")
+    table_node = _extract_table_node(node)
+    if table_node is not None:
+        df = _table_to_dataframe(table_node)
+        source_url = BASE_SETTINGS.page_url
+    else:
+        data_url = _extract_data_url(node)
+        if not data_url:
+            raise KeyError(f"Dataset '{cfg.label}' lacks downloadable data.")
+        prepared_url = _prepare_dataset_url(data_url, start_date, end_date)
+        df, source_url = _download_dataset(session, prepared_url)
+    if df.empty:
+        return df, BASE_SETTINGS.page_url
+    df = _prepare_dataframe(df, cfg, source_url)
+    return df, source_url
 
 
 @task
@@ -321,26 +575,29 @@ async def dld_open_data_pipeline() -> None:
 
     state = _load_state()
     session = requests.Session()
+    next_data = _fetch_page(session)
     es = es_client()
+
+    today = datetime.now(timezone.utc).date()
 
     for cfg in DATASET_CONFIGS:
         ensure_index(es, cfg.es_index)
         start = _compute_start_date(cfg, state)
         logger.info("Fetching DLD %s data starting %s", cfg.label, start)
-        records = _fetch_dataset_records(session, cfg, start)
-        if not records:
-            logger.info("No new records for %s", cfg.label)
+        try:
+            df, source_url = _fetch_dataset(session, next_data, cfg, start, today)
+        except RecaptchaBlockedError:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to fetch dataset %s: %s", cfg.label, exc)
             continue
 
-        for record in records:
-            record["_dataset"] = cfg.key
-            record["_source_url"] = cfg.resource_id
-        df = pd.DataFrame.from_records(records)
         if df.empty:
-            logger.info("Dataset %s returned empty frame", cfg.label)
+            logger.info("No records returned for %s", cfg.label)
             continue
 
-        max_dt = _extract_max_date(records, cfg.date_field)
+        date_column = _ensure_date_column(df, cfg.date_field)
+        max_dt = _extract_max_date_from_df(df, date_column)
         if max_dt:
             state.setdefault(cfg.key, {})["max_date"] = max_dt.isoformat()
 
@@ -356,7 +613,7 @@ async def dld_open_data_pipeline() -> None:
             raise_on_error=False,
             raise_on_exception=False,
         )
-        logger.info("ES bulk response for %s: %s", cfg.label, bulk_resp)
+        logger.info("ES bulk response for %s (source %s): %s", cfg.label, source_url, bulk_resp)
 
     _save_state(state)
 
@@ -367,7 +624,7 @@ class InputParams(BaseModel):
 
 register_pipeline(
     id="dld_open_data_pipeline",
-    description="Ingest Dubai Land Department open datasets into Elasticsearch.",
+    description="Ingest Dubai Land Department open datasets into Elasticsearch via the public web portal.",
     tasks=[dld_open_data_pipeline],
     triggers=[
         Trigger(
@@ -380,3 +637,4 @@ register_pipeline(
     ],
     params=InputParams,
 )
+
