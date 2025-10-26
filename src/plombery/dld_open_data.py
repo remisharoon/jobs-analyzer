@@ -21,6 +21,7 @@ import asyncio
 import io
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -71,6 +72,9 @@ REQUEST_HEADERS = {
     "Pragma": "no-cache",
     "Connection": "keep-alive",
 }
+
+RECAPTCHA_MAX_RETRIES = 3
+RECAPTCHA_BACKOFF_SECONDS = 30
 
 
 @dataclass(slots=True)
@@ -382,12 +386,49 @@ def _check_recaptcha(response: requests.Response) -> None:
             )
 
 
+def _get_with_recaptcha_retry(
+    session: requests.Session,
+    url: str,
+    *,
+    timeout: int,
+    headers: Mapping[str, str],
+) -> requests.Response:
+    last_error: RecaptchaBlockedError | None = None
+    for attempt in range(RECAPTCHA_MAX_RETRIES):
+        response = session.get(url, timeout=timeout, headers=headers)
+        try:
+            _check_recaptcha(response)
+        except RecaptchaBlockedError as exc:
+            last_error = exc
+            if attempt == RECAPTCHA_MAX_RETRIES - 1:
+                raise
+            backoff = RECAPTCHA_BACKOFF_SECONDS * (2**attempt)
+            logger.warning(
+                "Encountered reCAPTCHA challenge when fetching %s (attempt %s/%s). "
+                "Retrying in %s seconds.",
+                url,
+                attempt + 1,
+                RECAPTCHA_MAX_RETRIES,
+                backoff,
+            )
+            time.sleep(backoff)
+            continue
+        return response
+    if last_error is not None:  # pragma: no cover - defensive guard
+        raise last_error
+    raise RuntimeError("Unexpected failure fetching URL without response or error")
+
+
 def _download_dataset(
     session: requests.Session,
     url: str,
 ) -> tuple[pd.DataFrame, str]:
-    response = session.get(url, timeout=BASE_SETTINGS.request_timeout, headers=REQUEST_HEADERS)
-    _check_recaptcha(response)
+    response = _get_with_recaptcha_retry(
+        session,
+        url,
+        timeout=BASE_SETTINGS.request_timeout,
+        headers=REQUEST_HEADERS,
+    )
     content_type = response.headers.get("Content-Type", "").lower()
     source_url = response.url
     if "application/json" in content_type or response.text.strip().startswith("{"):
@@ -468,12 +509,12 @@ def ensure_index(es: Elasticsearch, index: str) -> None:
 
 
 def _fetch_page(session: requests.Session) -> dict[str, Any]:
-    response = session.get(
+    response = _get_with_recaptcha_retry(
+        session,
         BASE_SETTINGS.page_url,
         timeout=BASE_SETTINGS.request_timeout,
         headers=REQUEST_HEADERS,
     )
-    _check_recaptcha(response)
     response.raise_for_status()
     return _load_next_data(response.text)
 

@@ -50,7 +50,7 @@ To explore the job market trends and insights, visit the Jobs Analyzer dashboard
 - The Dubai Land Department open-data scraper lives in `src/plombery/dld_open_data.py`. It now scrapes the public “Real Estate Data” webpage (Next.js) instead of the legacy CKAN API and still supports the **Transactions**, **Rents**, **Projects**, **Valuations**, **Land**, **Building**, **Unit**, **Broker**, and **Developer** tabs.
 - Configure tab slugs, primary date columns, and Elasticsearch indices inside the `[dld_open_data]` section of `src/plombery/config/config.ini`. The default `page_url` points at `https://dubailand.gov.ae/en/open-data/real-estate-data/`, while `lookback_days` and optional per-dataset `*_buffer_days` control incremental windows when deriving the `FromDate` filters.
 - The scraper persists the most recent date per dataset in `saved_data/dld_open_data/state.json`, subtracting a small buffer (default three days) on every run to guard against late-arriving records. Artefacts are stored under `saved_data/dld_open_data/<dataset>/`, and records are indexed with `_dataset`, `_source_url`, and `_extracted_at_iso` metadata for downstream consumers.
-- Run `plombery run dld_open_data_pipeline` to ingest immediately or rely on the built-in trigger (06:00 Asia/Dubai). If the website serves a reCAPTCHA challenge ("I'm not a robot"), the task aborts with a `RecaptchaBlockedError` so you can intervene manually.
+- Run `plombery run dld_open_data_pipeline` to ingest immediately or rely on the built-in trigger (06:00 Asia/Dubai). The scraper now automatically retries when the website serves a temporary reCAPTCHA challenge ("I'm not a robot"), backing off between attempts before ultimately raising a `RecaptchaBlockedError` if the block persists.
 
 ### Testing
 

@@ -46,6 +46,7 @@ from plombery.dld_open_data import (  # noqa: E402
     RecaptchaBlockedError,
     _compute_start_date,
     _download_dataset,
+    _fetch_page,
     _extract_max_date_from_df,
     _find_dataset_node,
     _json_payload_to_df,
@@ -167,7 +168,8 @@ class DLDOpenDataTests(unittest.TestCase):
         df = _json_payload_to_df(payload)
         self.assertEqual(len(df), 1)
 
-    def test_download_dataset_detects_recaptcha(self) -> None:
+    @mock.patch("plombery.dld_open_data.time.sleep", autospec=True)
+    def test_download_dataset_detects_recaptcha(self, sleep_mock: mock.Mock) -> None:
         session = requests_session_with_response(
             DummyResponse(
                 "<html><body><p>I'm not a robot</p></body></html>",
@@ -177,6 +179,59 @@ class DLDOpenDataTests(unittest.TestCase):
         )
         with self.assertRaises(RecaptchaBlockedError):
             _download_dataset(session, "https://example.com/api")
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    @mock.patch("plombery.dld_open_data.time.sleep", autospec=True)
+    def test_download_dataset_retries_after_recaptcha(self, _sleep_mock: mock.Mock) -> None:
+        responses = [
+            DummyResponse(
+                "<html><body><p>recaptcha</p></body></html>",
+                url="https://example.com/api",  # type: ignore[arg-type]
+                content_type="text/html",
+            ),
+            DummyResponse(
+                json.dumps(
+                    {
+                        "columns": ["Registration Date", "Value"],
+                        "rows": [["2024-02-01", 9000]],
+                    }
+                ),
+                url="https://example.com/api",
+            ),
+        ]
+
+        session = mock.Mock()
+        session.get.side_effect = responses
+
+        df, source_url = _download_dataset(session, "https://example.com/api")
+
+        self.assertEqual(len(df), 1)
+        self.assertEqual(source_url, "https://example.com/api")
+        self.assertEqual(session.get.call_count, 2)
+
+    @mock.patch("plombery.dld_open_data.time.sleep", autospec=True)
+    def test_fetch_page_retries_after_recaptcha(self, _sleep_mock: mock.Mock) -> None:
+        html = (
+            '<html><body><script id="__NEXT_DATA__" type="application/json">'
+            + json.dumps(SAMPLE_NEXT_DATA)
+            + "</script></body></html>"
+        )
+
+        responses = [
+            DummyResponse(
+                "<html><body>Recaptcha</body></html>",
+                url=str(BASE_SETTINGS.page_url),
+                content_type="text/html",
+            ),
+            DummyResponse(html, url=str(BASE_SETTINGS.page_url), content_type="text/html"),
+        ]
+
+        session = mock.Mock()
+        session.get.side_effect = responses
+
+        parsed = _fetch_page(session)
+        self.assertIn("props", parsed)
+        self.assertEqual(session.get.call_count, 2)
 
     def test_fetch_dataset_uses_download_url(self) -> None:
         rents_cfg = DatasetConfig(
