@@ -1,14 +1,15 @@
 import pytest
 
-from kochi_launches_pipeline import (
+from property_launches_pipeline import (
     parse_duckduckgo_serp,
-    parse_prestige_kochi_projects,
+    parse_prestige_prelaunch_projects,
     parse_signature_dwellings,
     parse_realestateindia_locality,
+    parse_addressofchoice_listing,
     parse_project_detail_page,
     _looks_blocked,
     _load_next_data,
-    _is_kochi_project,
+    _is_relevant_project,
     _html_to_text,
 )
 
@@ -48,32 +49,32 @@ class TestParseDuckDuckGo:
         assert results == []
 
 
-class TestParsePrestigeKochiProjects:
+class TestParsePrestigePrelaunchProjects:
     def test_parse_listing_page(self, prestige_prelaunch_html):
-        projects = parse_prestige_kochi_projects(prestige_prelaunch_html)
+        projects = parse_prestige_prelaunch_projects(prestige_prelaunch_html)
         assert len(projects) >= 1
         names = [p["project_name"] for p in projects]
         assert any("Prestige" in n for n in names)
 
     def test_filters_non_kochi_projects(self, prestige_prelaunch_html):
-        projects = parse_prestige_kochi_projects(prestige_prelaunch_html)
+        projects = parse_prestige_prelaunch_projects(prestige_prelaunch_html)
         names = [p["project_name"] for p in projects]
         non_kochi = [n for n in names if "bangalore" in n.lower() or "mumbai" in n.lower() or "devanahalli" in n.lower()]
         assert len(non_kochi) == 0
 
     def test_project_urls_absolute(self, prestige_prelaunch_html):
-        projects = parse_prestige_kochi_projects(prestige_prelaunch_html)
+        projects = parse_prestige_prelaunch_projects(prestige_prelaunch_html)
         for p in projects:
             assert p["project_url"].startswith("http")
 
     def test_project_source(self, prestige_prelaunch_html):
-        projects = parse_prestige_kochi_projects(prestige_prelaunch_html)
+        projects = parse_prestige_prelaunch_projects(prestige_prelaunch_html)
         for p in projects:
             assert p["source"] == "prestige_prelaunch"
             assert p["builder_name"] == "Prestige Group"
 
     def test_parse_empty_page(self, empty_html):
-        projects = parse_prestige_kochi_projects(empty_html)
+        projects = parse_prestige_prelaunch_projects(empty_html)
         assert projects == []
 
 
@@ -116,6 +117,35 @@ class TestParseRealEstateIndia:
         projects = parse_realestateindia_locality(malformed_html)
         assert isinstance(projects, list)
 
+    def test_keeps_project_urls_and_filters_generic_names(self):
+        html = """
+        <a href="/projects/alpha-heights-pjid-123">Similar listings</a>
+        <a href="/kochi-property/new-projects-in-kakkanad.htm">projects in kakkanad</a>
+        """
+        projects = parse_realestateindia_locality(html, locality="kakkanad")
+        assert len(projects) == 1
+        assert projects[0]["project_name"] == "Alpha Heights"
+        assert "/projects/" in projects[0]["project_url"]
+
+
+class TestParseAddressOfChoice:
+    def test_filters_category_pages_and_keeps_project_entities(self):
+        html = """
+        <a href="/projects/skyline-orbit-kochi">Skyline Orbit Kochi</a>
+        <a href="/kochi/apartments">Apartments in Kochi</a>
+        <a href="/project/new-project-in-kochi/sunrise-residences">Read more</a>
+        """
+        projects = parse_addressofchoice_listing(html)
+        assert len(projects) == 2
+        names = [p["project_name"] for p in projects]
+        assert "Skyline Orbit Kochi" in names
+        assert "Sunrise Residences" in names
+
+    def test_ignores_non_project_like_url(self):
+        html = '<a href="/kochi/some-random-page">Kochi Luxury Homes</a>'
+        projects = parse_addressofchoice_listing(html)
+        assert projects == []
+
 
 class TestParseProjectDetailPage:
     def test_parse_detail(self, project_detail_html):
@@ -132,25 +162,41 @@ class TestParseProjectDetailPage:
         detail = parse_project_detail_page(malformed_html, "unknown")
         assert isinstance(detail, dict)
 
+    def test_realestateindia_possession_rows(self):
+        html = """
+        <html><body>
+          <p class="pf-lbl"><span>Possession</span></p>
+          <p class="pf-val">Sep&nbsp;2022</p>
+          <p class="pf-lbl"><span>Possession Status</span></p>
+          <p class="pf-val">Ready to Move</p>
+        </body></html>
+        """
+        detail = parse_project_detail_page(html, "realestateindia")
+        assert detail["possession_date"] == "2022-09"
+        assert detail["launch_status"] == "ready-to-move"
+        assert detail["possession_source"] == "detail_realestateindia"
 
-class TestIsKochiProject:
-    def test_kochi_in_text(self):
-        assert _is_kochi_project("New Projects in Kochi") is True
 
-    def test_kochi_in_url(self):
-        assert _is_kochi_project("Prestige Project", "https://example.com/kochi/prestige") is True
+class TestIsRelevantProject:
+    def test_city_in_text(self):
+        assert _is_relevant_project("New Projects in Kochi") is True
+
+    def test_city_in_url(self):
+        assert _is_relevant_project("Prestige Project", "https://example.com/kochi/prestige") is True
 
     def test_kakkanad_in_text(self):
-        assert _is_kochi_project("Project in Kakkanad") is True
+        assert _is_relevant_project("Project in Kakkanad") is True
 
     def test_bangalore_project(self):
-        assert _is_kochi_project("Prestige Project in Bangalore") is False
+        # All projects allowed - location extracted during enrichment
+        assert _is_relevant_project("Prestige Project in Bangalore") is True
 
     def test_devanahalli_project(self):
-        assert _is_kochi_project("Prestige Gardenia Estates at Devanahalli") is False
+        # All projects allowed - location extracted during enrichment
+        assert _is_relevant_project("Prestige Gardenia Estates at Devanahalli") is True
 
     def test_mixed_score(self):
-        assert _is_kochi_project("Project in Kochi near Bangalore") is True
+        assert _is_relevant_project("Project in Kochi near Bangalore") is True
 
 
 class TestHtmlToText:

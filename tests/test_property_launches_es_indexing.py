@@ -5,10 +5,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from kochi_launches_pipeline import (
+from property_launches_pipeline import (
     es_client,
     ensure_index,
     es_doc_exists,
+    _is_completed_status,
+    _split_projects_by_status,
+    delete_projects_from_index,
     df_to_actions,
     index_projects_to_es,
     ES_INDEX_MAPPING,
@@ -83,8 +86,8 @@ class TestDfToActions:
 class TestIndexProjectsToEs:
     def test_index_projects(self, mock_es_client, sample_project_record):
         record = normalize_project_record(sample_project_record)
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.bulk.return_value = (1, [])
                 indexed = index_projects_to_es([record], es=mock_es_client)
                 assert indexed == 1
@@ -98,8 +101,8 @@ class TestIndexProjectsToEs:
     def test_deduplication_before_index(self, mock_es_client, sample_project_record):
         record1 = normalize_project_record(sample_project_record)
         record2 = normalize_project_record(sample_project_record)
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.bulk.return_value = (1, [])
                 index_projects_to_es([record1, record2], es=mock_es_client)
                 call_args = mock_helpers.bulk.call_args
@@ -108,11 +111,66 @@ class TestIndexProjectsToEs:
 
     def test_ensure_index_called(self, mock_es_client, sample_project_record):
         record = normalize_project_record(sample_project_record)
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.bulk.return_value = (1, [])
                 index_projects_to_es([record], es=mock_es_client)
                 mock_es_client.indices.exists.assert_called()
+
+    def test_supports_custom_index(self, mock_es_client, sample_project_record):
+        record = normalize_project_record(sample_project_record)
+        with patch("property_launches_pipeline.helpers") as mock_helpers:
+            mock_helpers.bulk.return_value = (1, [])
+            indexed = index_projects_to_es([record], es=mock_es_client, index="property_completed_projects")
+            assert indexed == 1
+            call_args = mock_helpers.bulk.call_args
+            actions = list(call_args[0][1])
+            assert actions[0]["_index"] == "property_completed_projects"
+
+
+class TestStatusSplitHelpers:
+    def test_is_completed_status_variants(self):
+        assert _is_completed_status("ready-to-move") is True
+        assert _is_completed_status("ready to move") is True
+        assert _is_completed_status("ready_to_move") is True
+        assert _is_completed_status("new-launch") is False
+
+    def test_split_projects_by_status(self):
+        launches, completed = _split_projects_by_status([
+            {"id": "1", "launch_status": "new-launch"},
+            {"id": "2", "launch_status": "ready-to-move"},
+            {"id": "3", "launch_status": "ready to move"},
+        ])
+        assert [r["id"] for r in launches] == ["1"]
+        assert [r["id"] for r in completed] == ["2", "3"]
+
+
+class TestDeleteProjectsFromIndex:
+    def test_delete_projects_bulk(self, mock_es_client):
+        mock_es_client.indices.exists.return_value = True
+        mock_es_client.mget.return_value = {
+            "docs": [
+                {"_id": "a", "found": True},
+                {"_id": "b", "found": True},
+            ]
+        }
+        with patch("property_launches_pipeline.helpers") as mock_helpers:
+            mock_helpers.bulk.return_value = (2, [])
+            deleted = delete_projects_from_index(mock_es_client, "property_launches", ["a", "b", "a"])
+            assert deleted == 2
+            call_args = mock_helpers.bulk.call_args
+            actions = list(call_args[0][1])
+            assert len(actions) == 2
+            assert actions[0]["_op_type"] == "delete"
+            assert actions[0]["_index"] == "property_launches"
+
+    def test_skips_missing_docs(self, mock_es_client):
+        mock_es_client.indices.exists.return_value = True
+        mock_es_client.mget.return_value = {"docs": [{"_id": "a", "found": False}, {"_id": "b", "found": False}]}
+        with patch("property_launches_pipeline.helpers") as mock_helpers:
+            deleted = delete_projects_from_index(mock_es_client, "property_launches", ["a", "b"])
+            assert deleted == 0
+            mock_helpers.bulk.assert_not_called()
 
 
 class TestEsIndexMapping:

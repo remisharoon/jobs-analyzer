@@ -8,6 +8,12 @@ API_KEY_RHA = your-gemini-api-key-2
 [openrouter]
 API_KEY = your-openrouter-api-key
 
+[canonical_mapping]
+enabled = true
+index = canonical_mappings
+max_ai_calls_per_run = 150
+ai_enabled = true
+
 [elasticsearch]
 host = https://your-es-host:9200
 username = elastic
@@ -31,3 +37,863 @@ Password = your-smtp-password
 
 [core]
 base_url = https://example.com/api/listings?page={0}&offset={1}
+
+[housing]
+enabled = true
+cities = kochi,thiruvananthapuram,kozhikode,mumbai,bengaluru,new-delhi,hyderabad,chennai,kolkata,pune
+city_labels = thiruvananthapuram=Thiruvananthapuram,kozhikode=Kozhikode,new-delhi=New Delhi
+buy_listing_url = https://housing.com/in/buy/{city}?page={page}
+rent_listing_url = https://housing.com/in/rent/{city}?page={page}
+commercial_listing_url = https://housing.com/in/commercial/{city}?page={page}
+pg_listing_url = https://housing.com/in/pg/{city}?page={page}
+plots_listing_url = https://housing.com/in/plots/{city}?page={page}
+pages = 2
+rent_pages = 2
+commercial_pages = 2
+pg_pages = 2
+plots_pages = 2
+es_index = housing_properties
+rent_es_index = housing_rent_properties
+commercial_es_index = housing_commercial_properties
+pg_es_index = housing_pg_properties
+plots_es_index = housing_plots_properties
+min_delay_seconds = 2.0
+max_delay_seconds = 5.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+stop_on_existing = true
+data_dir = saved_data/housing
+schedule_hour = 4
+schedule_minute = 15
+schedule_timezone = Asia/Kolkata
+
+[acres99]
+enabled = true
+cities = kochi,thiruvananthapuram,kozhikode,mumbai,bengaluru,new-delhi,hyderabad,chennai,kolkata,pune
+city_labels = thiruvananthapuram=Thiruvananthapuram,kozhikode=Kozhikode,new-delhi=New Delhi
+listing_url = https://www.99acres.com/property-in-{city}-ffid-page-{page}
+rent_listing_url = https://www.99acres.com/property-for-rent-in-{city}-ffid-page-{page}
+pages = 2
+rent_pages = 2
+es_index = acres99_properties
+rent_es_index = acres99_rent_properties
+min_delay_seconds = 2.5
+max_delay_seconds = 6.5
+detail_retry_count = 4
+request_timeout_seconds = 30
+stop_on_existing = true
+data_dir = saved_data/99acres
+schedule_hour = 5
+schedule_minute = 30
+schedule_timezone = Asia/Kolkata
+
+[property_launches.kochi]
+city = Kochi
+state = Kerala
+district = Ernakulam
+duckduckgo_queries = pre launch apartments kochi,new launch villas kochi
+signature_dwellings_url = https://signaturedwellingsprojects.com/kochi/
+prestige_prelaunch_url =
+prestige_cityscape_url =
+realestateindia_url = https://www.realestateindia.com/kochi-property/new-projects.htm
+realestateindia_city_slug = kochi
+realestateindia_localities = kakkanad,edappally,maradu,thrippunithura
+pages = 10
+duckduckgo_pages = 3
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_launches
+completed_es_index = property_completed_projects
+schedule_hour = 1
+schedule_minute = 0
+schedule_timezone = Asia/Kolkata
+
+[property_launches.bengaluru]
+city = Bengaluru
+state = Karnataka
+district = Bengaluru Urban
+duckduckgo_queries = pre launch apartments bengaluru,new launch villas bengaluru
+signature_dwellings_url =
+prestige_prelaunch_url =
+prestige_cityscape_url =
+realestateindia_url = https://www.realestateindia.com/bangalore-property/new-projects.htm
+realestateindia_city_slug = bangalore
+realestateindia_localities = whitefield,sarjapur-road,hebbal,electronic-city
+pages = 10
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_launches
+completed_es_index = property_completed_projects
+schedule_hour = 2
+schedule_minute = 0
+schedule_timezone = Asia/Kolkata
+
+[builder_profiles]
+es_index = builder_profiles
+source_launch_index = property_launches
+source_completed_index = property_completed_projects
+source_project_index = property_projects
+discovery_cities = Kochi,Bengaluru,Dubai
+realestateindia_enabled = true
+realestateindia_max_load_more_pages = 25
+duckduckgo_pages = 1
+detail_pages_per_builder = 2
+max_builders_per_run = 150
+min_delay_seconds = 1.5
+max_delay_seconds = 3.5
+request_timeout_seconds = 25
+schedule_hour = 6
+schedule_minute = 0
+schedule_timezone = Asia/Dubai
+data_dir = saved_data/builder_profiles
+
+[market_events]
+es_index = market_events
+lookback_days = 7
+max_events_per_source = 400
+max_events_per_run = 1500
+request_timeout_seconds = 30
+request_retries = 2
+min_delay_seconds = 1.2
+max_delay_seconds = 2.8
+source_google_news_enabled = true
+source_guardian_enabled = true
+source_worldbank_enabled = true
+source_gdacs_enabled = true
+source_usgs_enabled = true
+source_eonet_enabled = false
+source_gdelt_enabled = true
+source_un_news_enabled = true
+source_federal_reserve_enabled = true
+source_ecb_enabled = true
+source_aljazeera_enabled = true
+source_arabnews_enabled = true
+source_spa_enabled = true
+min_source_credibility = medium
+min_quality_score = 55
+source_weight_high = 1.0
+source_weight_medium = 0.75
+source_weight_low = 0.5
+guardian_api_key = test
+backfill_start =
+backfill_end =
+max_backfill_days_per_run = 30
+
+[market_events.uae]
+region_name = UAE
+countries = UAE
+states = Dubai,Abu Dhabi,Sharjah,Ajman,Ras Al Khaimah,Fujairah,Umm Al Quwain
+cities = Dubai,Abu Dhabi,Sharjah,Ajman,Ras Al Khaimah,Fujairah,Umm Al Quwain,Al Ain
+localities =
+queries = UAE real estate market investment,Dubai new port project,Abu Dhabi infrastructure investment,UAE mega event expo fifa bid,UAE visa policy property market
+worldbank_country_codes = AE
+lookback_days = 7
+max_events_per_source = 500
+max_events_per_run = 1600
+request_timeout_seconds = 30
+request_retries = 2
+min_delay_seconds = 1.2
+max_delay_seconds = 2.8
+source_google_news_enabled = true
+source_guardian_enabled = true
+source_worldbank_enabled = true
+source_gdacs_enabled = true
+source_usgs_enabled = true
+source_eonet_enabled = false
+source_gdelt_enabled = true
+source_un_news_enabled = true
+source_federal_reserve_enabled = true
+source_ecb_enabled = true
+source_aljazeera_enabled = true
+source_arabnews_enabled = true
+source_spa_enabled = false
+min_source_credibility = medium
+min_quality_score = 65
+es_index = market_events
+data_dir = saved_data/market_events/uae
+schedule_hour = 6
+schedule_minute = 0
+schedule_timezone = Asia/Dubai
+
+[market_events.ksa]
+region_name = KSA
+countries = Saudi Arabia
+states = Riyadh,Makkah,Eastern Province,Medina
+cities = Riyadh,Jeddah,Dammam,Mecca,Medina
+localities =
+queries = Riyadh real estate investment,Saudi Arabia mega project housing,Riyadh Expo development,Jeddah port expansion project,Saudi policy mortgage real estate
+worldbank_country_codes = SA
+lookback_days = 7
+max_events_per_source = 500
+max_events_per_run = 1600
+request_timeout_seconds = 30
+request_retries = 2
+min_delay_seconds = 1.2
+max_delay_seconds = 2.8
+source_google_news_enabled = true
+source_guardian_enabled = true
+source_worldbank_enabled = true
+source_gdacs_enabled = true
+source_usgs_enabled = true
+source_eonet_enabled = false
+source_gdelt_enabled = true
+source_un_news_enabled = true
+source_federal_reserve_enabled = true
+source_ecb_enabled = true
+source_aljazeera_enabled = true
+source_arabnews_enabled = true
+source_spa_enabled = true
+min_source_credibility = medium
+min_quality_score = 55
+source_weight_high = 1.0
+source_weight_medium = 0.65
+source_weight_low = 0.45
+es_index = market_events
+data_dir = saved_data/market_events/ksa
+schedule_hour = 6
+schedule_minute = 25
+schedule_timezone = Asia/Riyadh
+
+[market_events.india_kerala]
+region_name = India-Kerala
+countries = India
+states = Kerala
+cities = Kochi,Thiruvananthapuram,Kozhikode
+localities =
+queries = Kochi major investment project,Thiruvananthapuram infrastructure project,Calicut Kozhikode development project,Kerala real estate policy,Kochi port airport expansion
+worldbank_country_codes = IN
+lookback_days = 10
+max_events_per_source = 600
+max_events_per_run = 1800
+request_timeout_seconds = 30
+request_retries = 2
+min_delay_seconds = 1.2
+max_delay_seconds = 2.8
+source_google_news_enabled = true
+source_guardian_enabled = true
+source_worldbank_enabled = true
+source_gdacs_enabled = true
+source_usgs_enabled = true
+source_eonet_enabled = false
+source_gdelt_enabled = true
+source_un_news_enabled = true
+source_federal_reserve_enabled = true
+source_ecb_enabled = true
+source_aljazeera_enabled = true
+source_arabnews_enabled = true
+source_spa_enabled = true
+min_source_credibility = medium
+min_quality_score = 50
+es_index = market_events
+data_dir = saved_data/market_events/india_kerala
+schedule_hour = 6
+schedule_minute = 50
+schedule_timezone = Asia/Kolkata
+
+[property_projects.kochi]
+country = India
+region = Kerala
+city = Kochi
+state = Kerala
+district = Ernakulam
+currency = INR
+source_realestateindia_pages = 4
+source_realestateindia_retries = 2
+source_realestateindia_max_projects = 90
+source_commonfloor_pages = 2
+source_commonfloor_retries = 1
+source_commonfloor_max_projects = 60
+source_housing_pages = 1
+source_housing_retries = 1
+source_housing_max_projects = 20
+duckduckgo_queries = property projects kochi,apartments villas commercial projects kochi,upcoming projects kochi
+duckduckgo_allowed_hosts = realestateindia.com,commonfloor.com,housing.com
+realestateindia_url = https://www.realestateindia.com/kochi-property/new-projects.htm?page={page}
+commonfloor_url = https://www.commonfloor.com/kochi-property/projects?page={page}
+housing_url = https://housing.com/in/projects/kochi?page={page}
+propertyfinder_url =
+aqar_url =
+bayut_url =
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 8
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/kochi
+schedule_hour = 3
+schedule_minute = 0
+schedule_timezone = Asia/Kolkata
+
+[property_projects.thiruvananthapuram]
+country = India
+region = Kerala
+city = Thiruvananthapuram
+state = Kerala
+district = Thiruvananthapuram
+currency = INR
+source_realestateindia_pages = 4
+source_realestateindia_retries = 2
+source_realestateindia_max_projects = 90
+source_commonfloor_pages = 2
+source_commonfloor_retries = 1
+source_commonfloor_max_projects = 60
+source_housing_pages = 1
+source_housing_retries = 1
+source_housing_max_projects = 20
+duckduckgo_queries = property projects thiruvananthapuram,apartments villas commercial projects trivandrum,new projects trivandrum
+duckduckgo_allowed_hosts = realestateindia.com,commonfloor.com,housing.com
+realestateindia_url = https://www.realestateindia.com/thiruvananthapuram-property/new-projects.htm?page={page}
+commonfloor_url = https://www.commonfloor.com/trivandrum-property/projects?page={page}
+housing_url = https://housing.com/in/projects/thiruvananthapuram?page={page}
+propertyfinder_url =
+aqar_url =
+bayut_url =
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 8
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/thiruvananthapuram
+schedule_hour = 3
+schedule_minute = 25
+schedule_timezone = Asia/Kolkata
+
+[property_projects.kozhikode]
+country = India
+region = Kerala
+city = Kozhikode
+state = Kerala
+district = Kozhikode
+currency = INR
+source_realestateindia_pages = 4
+source_realestateindia_retries = 2
+source_realestateindia_max_projects = 90
+source_commonfloor_pages = 2
+source_commonfloor_retries = 1
+source_commonfloor_max_projects = 40
+source_housing_pages = 1
+source_housing_retries = 1
+source_housing_max_projects = 20
+duckduckgo_queries = property projects kozhikode,apartments villas commercial projects calicut,new projects calicut
+duckduckgo_allowed_hosts = realestateindia.com,commonfloor.com,housing.com
+realestateindia_url = https://www.realestateindia.com/calicut-property/new-projects.htm?page={page}
+commonfloor_url = https://www.commonfloor.com/kozhikode-property/projects?page={page}
+housing_url = https://housing.com/in/projects/kozhikode?page={page}
+propertyfinder_url =
+aqar_url =
+bayut_url =
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 8
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/kozhikode
+schedule_hour = 3
+schedule_minute = 50
+schedule_timezone = Asia/Kolkata
+
+[property_projects.dubai]
+country = UAE
+region = UAE
+city = Dubai
+state = Dubai
+district = Dubai
+currency = AED
+source_propertyfinder_pages = 4
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 120
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+source_offplan_dubai_pages = 2
+source_offplan_dubai_retries = 1
+source_offplan_dubai_max_projects = 80
+source_extra_sources_pages = 1
+source_extra_sources_retries = 1
+source_extra_sources_max_projects = 120
+duckduckgo_queries = dubai property projects apartments villas commercial,off plan projects dubai,new commercial projects dubai
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com,offplan-dubai.com,uaeprojects.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/dubai?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/dubai/page-{page}/
+offplan_dubai_url = https://www.offplan-dubai.com/offplan-projects-in-dubai/
+dld_project_csv_url =
+extra_source_urls = https://uaeprojects.com/state/dubai
+pages = 10
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/dubai
+schedule_hour = 4
+schedule_minute = 0
+schedule_timezone = Asia/Dubai
+
+[property_projects.abu_dhabi]
+country = UAE
+region = UAE
+city = Abu Dhabi
+state = Abu Dhabi
+district = Abu Dhabi
+currency = AED
+source_propertyfinder_pages = 3
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 100
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+source_extra_sources_pages = 1
+source_extra_sources_retries = 1
+source_extra_sources_max_projects = 80
+duckduckgo_queries = abu dhabi property projects apartments villas commercial,off plan projects abu dhabi,new commercial projects abu dhabi
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com,uaeprojects.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/abu-dhabi?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/abu-dhabi/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+extra_source_urls = https://uaeprojects.com/state/abu-dhabi
+pages = 8
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/abu_dhabi
+schedule_hour = 4
+schedule_minute = 20
+schedule_timezone = Asia/Dubai
+
+[property_projects.sharjah]
+country = UAE
+region = UAE
+city = Sharjah
+state = Sharjah
+district = Sharjah
+currency = AED
+source_propertyfinder_pages = 3
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 100
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = sharjah property projects apartments villas commercial,off plan projects sharjah,new commercial projects sharjah
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/sharjah?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/sharjah/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 6
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/sharjah
+schedule_hour = 4
+schedule_minute = 40
+schedule_timezone = Asia/Dubai
+
+[property_projects.ajman]
+country = UAE
+region = UAE
+city = Ajman
+state = Ajman
+district = Ajman
+currency = AED
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 80
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = ajman property projects apartments villas commercial,off plan projects ajman,new commercial projects ajman
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/ajman?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/ajman/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 5
+duckduckgo_pages = 1
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/ajman
+schedule_hour = 5
+schedule_minute = 0
+schedule_timezone = Asia/Dubai
+
+[property_projects.ras_al_khaimah]
+country = UAE
+region = UAE
+city = Ras Al Khaimah
+state = Ras Al Khaimah
+district = Ras Al Khaimah
+currency = AED
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 80
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+source_extra_sources_pages = 1
+source_extra_sources_retries = 1
+source_extra_sources_max_projects = 60
+duckduckgo_queries = ras al khaimah property projects apartments villas commercial,off plan projects ras al khaimah
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com,uaeprojects.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/ras-al-khaimah?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/ras-al-khaimah/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+extra_source_urls = https://uaeprojects.com/state/ras-al-khaimah
+pages = 5
+duckduckgo_pages = 1
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/ras_al_khaimah
+schedule_hour = 5
+schedule_minute = 20
+schedule_timezone = Asia/Dubai
+
+[property_projects.fujairah]
+country = UAE
+region = UAE
+city = Fujairah
+state = Fujairah
+district = Fujairah
+currency = AED
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 50
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = fujairah property projects apartments villas commercial,off plan projects fujairah
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/fujairah?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/fujairah/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 4
+duckduckgo_pages = 1
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/fujairah
+schedule_hour = 5
+schedule_minute = 40
+schedule_timezone = Asia/Dubai
+
+[property_projects.umm_al_quwain]
+country = UAE
+region = UAE
+city = Umm Al Quwain
+state = Umm Al Quwain
+district = Umm Al Quwain
+currency = AED
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 50
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = umm al quwain property projects apartments villas commercial,off plan projects umm al quwain
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/umm-al-quwain?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/umm-al-quwain/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 4
+duckduckgo_pages = 1
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/umm_al_quwain
+schedule_hour = 6
+schedule_minute = 0
+schedule_timezone = Asia/Dubai
+
+[property_projects.al_ain]
+country = UAE
+region = UAE
+city = Al Ain
+state = Abu Dhabi
+district = Al Ain
+currency = AED
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 50
+source_bayut_pages = 1
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = al ain property projects apartments villas commercial,new projects al ain
+duckduckgo_allowed_hosts = propertyfinder.ae,bayut.com
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.ae/en/new-projects/lp/al-ain?page={page}
+aqar_url =
+bayut_url = https://www.bayut.com/for-sale/properties/al-ain/page-{page}/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 4
+duckduckgo_pages = 1
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/al_ain
+schedule_hour = 6
+schedule_minute = 20
+schedule_timezone = Asia/Dubai
+
+[property_projects.riyadh]
+country = KSA
+region = Saudi Arabia
+city = Riyadh
+state = Riyadh
+district = Riyadh
+currency = SAR
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 60
+source_aqar_pages = 2
+source_aqar_retries = 1
+source_aqar_max_projects = 130
+source_bayut_pages = 2
+source_bayut_retries = 1
+source_bayut_max_projects = 45
+source_extra_sources_pages = 1
+source_extra_sources_retries = 1
+source_extra_sources_max_projects = 35
+duckduckgo_queries = riyadh property projects apartments villas commercial,off plan projects riyadh,real estate projects riyadh
+duckduckgo_allowed_hosts = propertyfinder.sa,aqar.fm,bayut.sa,madaproperties.sa
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.sa/en/new-projects/lp/ar-riyadh?page={page}
+aqar_url = https://aqar.fm/%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9-%D8%A7%D9%84%D8%B9%D9%82%D8%A7%D8%B1%D9%8A%D8%A9/%D8%A7%D9%84%D8%B1%D9%8A%D8%A7%D8%B6
+bayut_url = https://www.bayut.sa/en/new-projects/Riyadh-230-1/
+offplan_dubai_url =
+dld_project_csv_url =
+extra_source_urls = https://madaproperties.sa/projects
+pages = 8
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/riyadh
+schedule_hour = 7
+schedule_minute = 0
+schedule_timezone = Asia/Riyadh
+
+[property_projects.jeddah]
+country = KSA
+region = Saudi Arabia
+city = Jeddah
+state = Makkah
+district = Jeddah
+currency = SAR
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 50
+source_aqar_pages = 2
+source_aqar_retries = 1
+source_aqar_max_projects = 90
+source_bayut_pages = 2
+source_bayut_retries = 1
+source_bayut_max_projects = 40
+duckduckgo_queries = jeddah property projects apartments villas commercial,off plan projects jeddah,real estate projects jeddah
+duckduckgo_allowed_hosts = propertyfinder.sa,aqar.fm,bayut.sa
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.sa/en/new-projects/lp/makkah-al-mukarramah?page={page}
+aqar_url = https://aqar.fm/%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9-%D8%A7%D9%84%D8%B9%D9%82%D8%A7%D8%B1%D9%8A%D8%A9/%D8%AC%D8%AF%D8%A9
+bayut_url = https://www.bayut.sa/en/new-projects/Jeddah-574-1/
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 7
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/jeddah
+schedule_hour = 7
+schedule_minute = 25
+schedule_timezone = Asia/Riyadh
+
+[property_projects.dammam]
+country = KSA
+region = Saudi Arabia
+city = Dammam
+state = Eastern Province
+district = Dammam
+currency = SAR
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 40
+source_aqar_pages = 2
+source_aqar_retries = 1
+source_aqar_max_projects = 80
+source_bayut_pages = 2
+source_bayut_retries = 1
+source_bayut_max_projects = 35
+duckduckgo_queries = dammam property projects apartments villas commercial,off plan projects dammam,real estate projects dammam
+duckduckgo_allowed_hosts = propertyfinder.sa,aqar.fm,bayut.sa
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.sa/en/new-projects/lp/eastern?page={page}
+aqar_url = https://aqar.fm/%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9-%D8%A7%D9%84%D8%B9%D9%82%D8%A7%D8%B1%D9%8A%D8%A9/%D8%A7%D9%84%D8%AF%D9%85%D8%A7%D9%85
+bayut_url = https://www.bayut.sa/en/new-projects/search/?city=dammam
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 6
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/dammam
+schedule_hour = 7
+schedule_minute = 50
+schedule_timezone = Asia/Riyadh
+
+[property_projects.mecca]
+country = KSA
+region = Saudi Arabia
+city = Mecca
+state = Makkah
+district = Mecca
+currency = SAR
+source_propertyfinder_pages = 2
+source_propertyfinder_retries = 2
+source_propertyfinder_max_projects = 40
+source_aqar_pages = 2
+source_aqar_retries = 1
+source_aqar_max_projects = 70
+source_bayut_pages = 2
+source_bayut_retries = 1
+source_bayut_max_projects = 30
+duckduckgo_queries = mecca property projects apartments villas commercial,real estate projects mecca,makkah property projects
+duckduckgo_allowed_hosts = propertyfinder.sa,aqar.fm,bayut.sa
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.sa/en/new-projects/lp/makkah-al-mukarramah?page={page}
+aqar_url = https://aqar.fm/%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9-%D8%A7%D9%84%D8%B9%D9%82%D8%A7%D8%B1%D9%8A%D8%A9/%D9%85%D9%83%D8%A9-%D8%A7%D9%84%D9%85%D9%83%D8%B1%D9%85%D8%A9
+bayut_url = https://www.bayut.sa/en/new-projects/search/?city=mecca
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 5
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/mecca
+schedule_hour = 8
+schedule_minute = 15
+schedule_timezone = Asia/Riyadh
+
+[property_projects.medina]
+country = KSA
+region = Saudi Arabia
+city = Medina
+state = Medina
+district = Medina
+currency = SAR
+source_propertyfinder_pages = 1
+source_propertyfinder_retries = 1
+source_propertyfinder_max_projects = 20
+source_aqar_pages = 2
+source_aqar_retries = 1
+source_aqar_max_projects = 50
+source_bayut_pages = 2
+source_bayut_retries = 1
+source_bayut_max_projects = 25
+duckduckgo_queries = medina property projects apartments villas commercial,real estate projects medina,madinah property projects
+duckduckgo_allowed_hosts = propertyfinder.sa,aqar.fm,bayut.sa
+realestateindia_url =
+commonfloor_url =
+housing_url =
+propertyfinder_url = https://www.propertyfinder.sa/en/new-projects/lp/al-madinah-al-munawwarah?page={page}
+aqar_url = https://aqar.fm/%D8%A7%D9%84%D9%85%D8%B4%D8%A7%D8%B1%D9%8A%D8%B9-%D8%A7%D9%84%D8%B9%D9%82%D8%A7%D8%B1%D9%8A%D8%A9/%D8%A7%D9%84%D9%85%D8%AF%D9%8A%D9%86%D8%A9-%D8%A7%D9%84%D9%85%D9%86%D9%88%D8%B1%D8%A9
+bayut_url = https://www.bayut.sa/en/new-projects/search/?city=medina
+offplan_dubai_url =
+dld_project_csv_url =
+pages = 5
+duckduckgo_pages = 2
+min_delay_seconds = 2.0
+max_delay_seconds = 6.0
+detail_retry_count = 3
+request_timeout_seconds = 30
+es_index = property_projects
+data_dir = saved_data/property_projects/medina
+schedule_hour = 8
+schedule_minute = 40
+schedule_timezone = Asia/Riyadh

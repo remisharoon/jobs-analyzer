@@ -1,7 +1,15 @@
-import jobs_scrape_pipeline, jobs_alerts_pipeline, standardization_pipeline, dubzl_crs, crswth_crs, allsopp_crs, kochi_launches_pipeline
-# import jobs_scrape_pipeline, jobs_alerts_pipeline, standardization_pipeline, dubzl_crs, crswth_crs
-# from plombery import get_app  # noqa: F401
-# import kochi_launches_pipeline
+import jobs_scrape_pipeline
+import jobs_alerts_pipeline
+import standardization_pipeline
+import dubzl_crs
+import crswth_crs
+import allsopp_crs
+import acres99_crs
+import housing_crs
+import property_launches_pipeline
+import builder_profiles_pipeline
+import property_projects_pipeline
+import market_events_pipeline
 
 
 if __name__ == "__main__":

@@ -4,14 +4,14 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
 
-from kochi_launches_pipeline import (
-    discover_kochi_projects,
+from property_launches_pipeline import (
+    discover_projects,
     enrich_project_details,
     standardize_and_index,
     ai_classify_builders,
     normalize_project_record,
     parse_duckduckgo_serp,
-    parse_prestige_kochi_projects,
+    parse_prestige_prelaunch_projects,
     parse_signature_dwellings,
     parse_project_detail_page,
     InputParams,
@@ -27,8 +27,8 @@ def run_async(coro):
 
 
 class TestDiscoverTask:
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_discovers_from_duckduckgo(self, mock_client_builder, mock_fetch, google_serp_html):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
@@ -43,94 +43,114 @@ class TestDiscoverTask:
 
         mock_fetch.side_effect = side_effect
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.duckduckgo_queries = ["pre launch apartments kochi"]
             mock_settings.duckduckgo_pages = 1
             mock_settings.signature_dwellings_url = ""
-            mock_settings.prestige_prelaunch_kochi_url = ""
+            mock_settings.prestige_prelaunch_url = ""
             mock_settings.realestateindia_url = ""
             mock_settings.realestateindia_localities = []
             mock_settings.pages = 1
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
 
-            result = run_async(discover_kochi_projects.run(params=InputParams()))
+            with patch("property_launches_pipeline._activate_settings", return_value=mock_settings):
+                result = run_async(discover_projects.run(params=InputParams()))
             assert isinstance(result, list)
             assert len(result) > 0
 
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_discovers_from_prestige_prelaunch(self, mock_client_builder, mock_fetch, prestige_prelaunch_html):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
         mock_fetch.return_value = prestige_prelaunch_html
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.duckduckgo_queries = []
             mock_settings.duckduckgo_pages = 0
             mock_settings.signature_dwellings_url = ""
-            mock_settings.prestige_prelaunch_kochi_url = "https://prestigeprelaunchprojects.com/kochi/"
+            mock_settings.prestige_prelaunch_url = "https://prestigeprelaunchprojects.com/kochi/"
             mock_settings.realestateindia_url = ""
             mock_settings.realestateindia_localities = []
             mock_settings.pages = 1
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
 
-            result = run_async(discover_kochi_projects.run(params=InputParams()))
+            with patch("property_launches_pipeline._activate_settings", return_value=mock_settings):
+                result = run_async(discover_projects.run(params=InputParams()))
             assert isinstance(result, list)
             assert len(result) >= 1
             names = [p.get("project_name", "") for p in result]
             assert any("Prestige" in n for n in names)
 
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_discovers_from_signature_dwellings(self, mock_client_builder, mock_fetch, signature_dwellings_html):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
         mock_fetch.return_value = signature_dwellings_html
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.duckduckgo_queries = []
             mock_settings.duckduckgo_pages = 0
             mock_settings.signature_dwellings_url = "https://signaturedwellingsprojects.com/kochi/"
-            mock_settings.prestige_prelaunch_kochi_url = ""
+            mock_settings.prestige_prelaunch_url = ""
             mock_settings.realestateindia_url = ""
             mock_settings.realestateindia_localities = []
             mock_settings.pages = 1
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
 
-            result = run_async(discover_kochi_projects.run(params=InputParams()))
+            with patch("property_launches_pipeline._activate_settings", return_value=mock_settings):
+                result = run_async(discover_projects.run(params=InputParams()))
             assert isinstance(result, list)
             assert len(result) >= 2
             names = [p.get("project_name", "") for p in result]
             assert any("Signature" in n for n in names)
 
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_handles_empty_results(self, mock_client_builder, mock_fetch, empty_html):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
         mock_fetch.return_value = empty_html
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.duckduckgo_queries = []
             mock_settings.duckduckgo_pages = 0
             mock_settings.signature_dwellings_url = ""
-            mock_settings.prestige_prelaunch_kochi_url = ""
+            mock_settings.prestige_prelaunch_url = ""
             mock_settings.realestateindia_url = ""
             mock_settings.realestateindia_localities = []
             mock_settings.pages = 0
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
 
-            result = run_async(discover_kochi_projects.run(params=InputParams()))
+            with patch("property_launches_pipeline._activate_settings", return_value=mock_settings):
+                result = run_async(discover_projects.run(params=InputParams()))
             assert isinstance(result, list)
 
 
 class TestEnrichTask:
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_enriches_project_details(self, mock_client_builder, mock_fetch, project_detail_html):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
@@ -145,7 +165,11 @@ class TestEnrichTask:
             }
         ]
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
             mock_settings.detail_retry = 1
@@ -157,12 +181,16 @@ class TestEnrichTask:
             assert record.get("project_name") == "Prestige Dolphins Court"
             assert "id" in record
 
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._build_http_client")
     def test_enrich_empty_list(self, mock_client_builder):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
 
@@ -174,16 +202,63 @@ class TestStandardizeAndIndexTask:
     def test_standardize_and_index(self, mock_es_client, sample_project_record):
         record = normalize_project_record(sample_project_record)
 
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.bulk.return_value = (1, [])
                 result = run_async(standardize_and_index.run(enriched=[record]))
                 assert result >= 0
 
     def test_empty_input(self, mock_es_client):
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
             result = run_async(standardize_and_index.run(enriched=[]))
             assert result == 0
+
+    def test_routes_ready_to_move_to_completed_index(self, mock_es_client):
+        launch = normalize_project_record({
+            "project_name": "Launch Project",
+            "builder_name": "Builder A",
+            "launch_status": "new-launch",
+            "source": "test",
+        })
+        completed = normalize_project_record({
+            "project_name": "Completed Project",
+            "builder_name": "Builder B",
+            "launch_status": "ready-to-move",
+            "source": "test",
+        })
+
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
+            mock_settings.es_index = "property_launches"
+            mock_settings.completed_es_index = "property_completed_projects"
+            with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+                with patch("property_launches_pipeline.helpers") as mock_helpers:
+                    mock_helpers.bulk.side_effect = [
+                        (1, []),  # launch index
+                        (1, []),  # completed index
+                        (1, []),  # delete completed from launch
+                        (1, []),  # delete launch from completed
+                    ]
+                    mock_es_client.indices.exists.return_value = True
+                    mock_es_client.mget.return_value = {
+                        "docs": [
+                            {"_id": launch["id"], "found": True},
+                            {"_id": completed["id"], "found": True},
+                        ]
+                    }
+                    result = run_async(standardize_and_index.run(enriched=[launch, completed]))
+                    assert result == 2
+                    assert mock_helpers.bulk.call_count == 4
+
+                    first_actions = mock_helpers.bulk.call_args_list[0][0][1]
+                    second_actions = mock_helpers.bulk.call_args_list[1][0][1]
+                    assert first_actions[0]["_op_type"] == "index"
+                    assert second_actions[0]["_op_type"] == "index"
+                    assert first_actions[0]["_index"] == "property_launches"
+                    assert second_actions[0]["_index"] == "property_completed_projects"
 
 
 class TestClassifyBuildersTask:
@@ -200,8 +275,8 @@ class TestClassifyBuildersTask:
             }
         ]
 
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.scan.return_value = docs
                 result = run_async(ai_classify_builders.run())
                 assert result >= 0
@@ -210,17 +285,17 @@ class TestClassifyBuildersTask:
     def test_no_docs_needing_classification(self, mock_es_client):
         mock_es_client.indices.exists.return_value = True
 
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.scan.return_value = []
                 result = run_async(ai_classify_builders.run())
                 assert result == 0
 
 
 class TestFullPipelineIntegration:
-    @patch("kochi_launches_pipeline.ai_extract_project")
-    @patch("kochi_launches_pipeline._fetch")
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline.ai_extract_project")
+    @patch("property_launches_pipeline._fetch")
+    @patch("property_launches_pipeline._build_http_client")
     def test_discover_to_index_chain(self, mock_client_builder, mock_fetch, mock_ai_extract, signature_dwellings_html, project_detail_html, mock_es_client):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
@@ -233,32 +308,38 @@ class TestFullPipelineIntegration:
 
         mock_fetch.side_effect = side_effect
 
-        with patch("kochi_launches_pipeline.SETTINGS") as mock_settings:
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city = "Kochi"
+            mock_settings.state = "Kerala"
+            mock_settings.district = "Ernakulam"
+            mock_settings.city_key = "kochi"
             mock_settings.duckduckgo_queries = []
             mock_settings.duckduckgo_pages = 0
             mock_settings.signature_dwellings_url = "https://signaturedwellingsprojects.com/kochi/"
-            mock_settings.prestige_prelaunch_kochi_url = ""
+            mock_settings.prestige_prelaunch_url = ""
             mock_settings.realestateindia_url = ""
             mock_settings.realestateindia_localities = []
             mock_settings.pages = 1
             mock_settings.min_delay = 0.01
             mock_settings.max_delay = 0.02
             mock_settings.detail_retry = 1
-            mock_settings.es_index = "kochi_property_launches"
+            mock_settings.es_index = "property_launches"
+            mock_settings.completed_es_index = "property_completed_projects"
 
-            discovered = run_async(discover_kochi_projects.run(params=InputParams()))
+            with patch("property_launches_pipeline._activate_settings", return_value=mock_settings):
+                discovered = run_async(discover_projects.run(params=InputParams()))
             assert len(discovered) > 0
 
             enriched = run_async(enrich_project_details.run(discovered=discovered))
             assert len(enriched) > 0
 
-            with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-                with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+            with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+                with patch("property_launches_pipeline.helpers") as mock_helpers:
                     mock_helpers.bulk.return_value = (len(enriched), [])
                     indexed = run_async(standardize_and_index.run(enriched=enriched))
                     assert indexed >= 0
 
-    @patch("kochi_launches_pipeline._build_http_client")
+    @patch("property_launches_pipeline._build_http_client")
     def test_dedup_across_sources(self, mock_client_builder, mock_es_client):
         mock_session = MagicMock()
         mock_client_builder.return_value = (mock_session, False)
@@ -279,8 +360,8 @@ class TestFullPipelineIntegration:
             "source": "prestige_prelaunch",
         })
 
-        with patch("kochi_launches_pipeline.es_client", return_value=mock_es_client):
-            with patch("kochi_launches_pipeline.helpers") as mock_helpers:
+        with patch("property_launches_pipeline.es_client", return_value=mock_es_client):
+            with patch("property_launches_pipeline.helpers") as mock_helpers:
                 mock_helpers.bulk.return_value = (1, [])
                 indexed = run_async(standardize_and_index.run(enriched=[record1, record2]))
                 call_args = mock_helpers.bulk.call_args

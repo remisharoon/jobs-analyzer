@@ -51,6 +51,21 @@ def blocked_page_html():
 
 
 @pytest.fixture
+def housing_detail_html():
+    return (FIXTURES_DIR / "housing_detail_page.html").read_text()
+
+
+@pytest.fixture
+def acres99_html():
+    return (FIXTURES_DIR / "acres99_kochi_listing.html").read_text()
+
+
+@pytest.fixture
+def acres99_detail_html():
+    return (FIXTURES_DIR / "acres99_detail_page.html").read_text()
+
+
+@pytest.fixture
 def empty_html():
     return "<html><body></body></html>"
 
@@ -146,10 +161,10 @@ def mock_gemini_response():
         resp = MagicMock()
         resp.status_code = status_code
         resp.json.return_value = {
-            "candidates": [
+            "choices": [
                 {
-                    "content": {
-                        "parts": [{"text": json.dumps(data)}]
+                    "message": {
+                        "content": json.dumps(data)
                     }
                 }
             ]
@@ -161,19 +176,28 @@ def mock_gemini_response():
 @pytest.fixture
 def mock_config():
     config_dict = {
-        "kochi_launches": {
-            "magicbricks_url": "https://www.magicbricks.com/new-projects-kochi-pppfs",
-            "housing_url": "https://www.housing.com/new-projects/kochi",
-            "acres99_url": "https://www.99acres.com/new-projects-in-kochi",
-            "commonfloor_url": "https://www.commonfloor.com/kochi-property/new-projects",
-            "google_search_queries": "pre launch apartments kochi,new launch villas kochi",
+        "property_launches.kochi": {
+            "city": "Kochi",
+            "state": "Kerala",
+            "district": "Ernakulam",
+            "duckduckgo_queries": "pre launch apartments kochi,new launch villas kochi",
+            "signature_dwellings_url": "https://signaturedwellingsprojects.com/kochi/",
+            "prestige_prelaunch_url": "",
+            "prestige_cityscape_url": "",
+            "realestateindia_url": "https://www.realestateindia.com/kochi-property/new-projects.htm",
+            "realestateindia_city_slug": "kochi",
+            "realestateindia_localities": "kakkanad,edappally,maradu,thrippunithura",
             "pages": "5",
-            "google_pages": "2",
+            "duckduckgo_pages": "2",
             "min_delay_seconds": "0.1",
             "max_delay_seconds": "0.2",
             "detail_retry_count": "1",
             "request_timeout_seconds": "10",
-            "es_index": "kochi_property_launches",
+            "es_index": "property_launches",
+            "completed_es_index": "property_completed_projects",
+            "schedule_hour": "1",
+            "schedule_minute": "0",
+            "schedule_timezone": "Asia/Kolkata",
         },
         "elasticsearch": {
             "host": "localhost:9200",
@@ -184,10 +208,19 @@ def mock_config():
             "API_KEY_RH": "fake-key-1",
             "API_KEY_RHA": "fake-key-2",
         },
+        "openrouter": {
+            "API_KEY": "fake-or-key",
+        },
     }
 
     class FakeConfig:
         def __getitem__(self, key):
             return config_dict.get(key, {})
+
+        def has_section(self, key):
+            return key in config_dict
+
+        def sections(self):
+            return list(config_dict.keys())
 
     return FakeConfig()

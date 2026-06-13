@@ -1,8 +1,8 @@
-"""Kochi pre-launch & new-launch property scraper pipeline.
+"""Multi-city pre-launch & new-launch property scraper pipeline.
 
 Discovers, enriches, standardizes and indexes pre-launch and new-launch
-residential projects (apartments, villas) in Kochi, Kerala from multiple
-property portals and search engines, into Elasticsearch.
+residential projects (apartments, villas) across configurable Indian cities
+from multiple property portals and search engines, into Elasticsearch.
 
 Two-level discovery:
   Level 1: Find listing pages via DuckDuckGo + portal homepages
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import random
@@ -41,14 +42,11 @@ from pydantic import BaseModel
 from plombery import Trigger, register_pipeline, task
 
 from config import read_config
+from utils.canonical_resolver import CanonicalResolver, DEFAULT_CANONICAL_INDEX
+from utils.llm_client import call_llm
 
 
 logger = logging.getLogger(__name__)
-
-GEMINI_V2_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-GEMINI_V1_5_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-MAX_RETRIES_V2 = 3
-MAX_RETRIES_V1_5 = 3
 
 PRICE_MULTIPLIERS = {
     "cr": 10_000_000,
@@ -87,9 +85,13 @@ REQUEST_HEADERS = {
     "Connection": "keep-alive",
 }
 
+DEFAULT_LAUNCH_INDEX = "property_launches"
+DEFAULT_COMPLETED_INDEX = "property_completed_projects"
+
 MANDATORY_FIELDS = [
     "id", "project_name", "builder_name", "launch_status",
-    "city", "state", "source", "discovered_at", "updated_at",
+    "city", "state", "target_city_key", "target_city",
+    "source", "data_quality", "discovered_at", "updated_at",
 ]
 
 STANDARD_SCHEMA_FIELDS = [
@@ -101,13 +103,16 @@ STANDARD_SCHEMA_FIELDS = [
     "carpet_area_min_sqft", "carpet_area_max_sqft",
     "super_area_min_sqft", "super_area_max_sqft",
     "locality", "city", "district", "state",
+    "target_city_key", "target_city",
     "latitude", "longitude",
     "possession_date", "possession_quarter",
+    "possession_source", "possession_confidence",
     "rera_number", "rera_status",
     "amenities", "floor_plans",
     "project_description", "project_highlights",
     "images", "brochure_url",
     "project_url", "builder_url", "source_url", "source",
+    "data_quality",
     "discovered_at", "updated_at",
 ]
 
@@ -122,7 +127,10 @@ KNOWN_MID_SEGMENT_BUILDERS = {
     "white rose", "sreelakam", "navkar builders", "benz developers",
 }
 
-BUILDER_TIER_PROMPT = """You are a real estate expert specializing in Kerala, India.
+INDIA_CITY_HINTS = {"kochi", "bengaluru", "bangalore", "mumbai", "pune", "hyderabad", "chennai", "delhi"}
+UAE_CITY_HINTS = {"dubai", "abu dhabi", "sharjah", "ajman", "al ain", "ras al khaimah", "fujairah"}
+
+BUILDER_TIER_PROMPT_TEMPLATE = """You are a real estate expert specializing in {region}, India.
 Classify the builder into one of these tiers based on their name, reputation, and the project details:
 - "luxury": Ultra-premium, 5-star amenities, premium locations, ₹1.5 Cr+ apartments / ₹3 Cr+ villas
 - "premium": Well-known national/state builders, good amenities, ₹80L-1.5 Cr apartments / ₹1.5-3 Cr villas
@@ -167,6 +175,17 @@ Keys:
 - brochure_url (string)
 - builder_url (string)"""
 
+POSSESSION_BACKFILL_PROMPT = """Extract ONLY possession metadata from the text.
+Return ONLY valid JSON object with keys:
+- possession_date (string YYYY-MM or YYYY-MM-DD or null)
+- possession_quarter (string like Q1 2027 or null)
+- launch_status (pre-launch|new-launch|under-construction|ready-to-move|upcoming or null)
+- confidence (high|medium|low)
+Rules:
+- If text says ready to move / ready-to-move -> launch_status=ready-to-move and possession_date=null
+- If only year is present, return YYYY-01
+- No markdown, no code fences, no extra keys"""
+
 try:
     import json_repair
 except Exception:
@@ -185,31 +204,28 @@ except Exception:
 
 config = read_config()
 
-CONFIG_SECTION = "kochi_launches"
-kochi_section = config[CONFIG_SECTION]
-if not kochi_section:
-    raise KeyError("Missing [kochi_launches] section in config.ini")
+CONFIG_SECTION_PREFIX = "property_launches"
+
+
+def _city_slug(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text or "city"
+
+
+def _available_city_sections() -> dict[str, str]:
+    out: dict[str, str] = {}
+    prefix = f"{CONFIG_SECTION_PREFIX}."
+    for section_name in config.sections():
+        if not section_name.startswith(prefix):
+            continue
+        city_key = section_name[len(prefix):].strip().lower()
+        if city_key:
+            out[city_key] = section_name
+    return out
+
 
 _es_config = config["elasticsearch"]
-_gemini_config = config["GeminiPro"]
-
-GEMINI_API_KEY = random.choice([_gemini_config["API_KEY_RH"], _gemini_config["API_KEY_RHA"]])
-GEMINI_HEADERS = {"Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY}
-GEMINI_PARAMS = {"key": GEMINI_API_KEY}
-
-DUCKDUCKGO_QUERIES = [q.strip() for q in kochi_section.get("duckduckgo_queries", "pre launch apartments kochi").split(",") if q.strip()]
-SIGNATURE_DWELLINGS_URL = kochi_section.get("signature_dwellings_url", "https://signaturedwellingsprojects.com/kochi/")
-PRESTIGE_PRELAUNCH_KOCHI_URL = kochi_section.get("prestige_prelaunch_kochi_url", "https://prestigeprelaunchprojects.com/kochi/")
-PRESTIGE_CITYSCAPE_URL = kochi_section.get("prestige_cityscape_url", "https://prestigeprelaunchprojects.com/kochi/prestige-cityscape-kundannoor/")
-REALESTATEINDIA_URL = kochi_section.get("realestateindia_url", "https://www.realestateindia.com/kochi-property/new-projects.htm")
-REALESTATEINDIA_LOCALITIES = [l.strip() for l in kochi_section.get("realestateindia_localities", "").split(",") if l.strip()]
-PAGES = int(kochi_section.get("pages", "10"))
-DUCKDUCKGO_PAGES = int(kochi_section.get("duckduckgo_pages", "3"))
-MIN_DELAY = float(kochi_section.get("min_delay_seconds", "2.0"))
-MAX_DELAY = float(kochi_section.get("max_delay_seconds", "6.0"))
-DETAIL_RETRY = int(kochi_section.get("detail_retry_count", "3"))
-REQUEST_TIMEOUT = int(kochi_section.get("request_timeout_seconds", "30"))
-ES_INDEX = kochi_section.get("es_index", "kochi_property_launches")
 
 es_hosts = []
 for h in _es_config["host"].split(","):
@@ -226,12 +242,17 @@ es_password = _es_config["password"]
 
 
 @dataclass(slots=True)
-class KochiLaunchSettings:
+class PropertyLaunchSettings:
+    city_key: str
+    city: str
+    state: str
+    district: str
     duckduckgo_queries: list[str]
     signature_dwellings_url: str
-    prestige_prelaunch_kochi_url: str
+    prestige_prelaunch_url: str
     prestige_cityscape_url: str
     realestateindia_url: str
+    realestateindia_city_slug: str
     realestateindia_localities: list[str]
     pages: int
     duckduckgo_pages: int
@@ -240,23 +261,165 @@ class KochiLaunchSettings:
     detail_retry: int
     request_timeout: int
     es_index: str
+    completed_es_index: str
+    data_dir: Path
+    schedule_hour: str
+    schedule_minute: str
+    schedule_timezone: str
 
 
-SETTINGS = KochiLaunchSettings(
-    duckduckgo_queries=DUCKDUCKGO_QUERIES,
-    signature_dwellings_url=SIGNATURE_DWELLINGS_URL,
-    prestige_prelaunch_kochi_url=PRESTIGE_PRELAUNCH_KOCHI_URL,
-    prestige_cityscape_url=PRESTIGE_CITYSCAPE_URL,
-    realestateindia_url=REALESTATEINDIA_URL,
-    realestateindia_localities=REALESTATEINDIA_LOCALITIES,
-    pages=PAGES,
-    duckduckgo_pages=DUCKDUCKGO_PAGES,
-    min_delay=MIN_DELAY,
-    max_delay=MAX_DELAY,
-    detail_retry=DETAIL_RETRY,
-    request_timeout=REQUEST_TIMEOUT,
-    es_index=ES_INDEX,
-)
+def _load_settings_for_city(city: str) -> PropertyLaunchSettings:
+    city_key = _city_slug(city)
+    section_name = f"{CONFIG_SECTION_PREFIX}.{city_key}"
+    if not config.has_section(section_name):
+        available = ", ".join(sorted(_available_city_sections())) or "none"
+        raise KeyError(f"Missing [{section_name}] section in config.ini. Available cities: {available}")
+
+    section = config[section_name]
+    city_name = (section.get("city", city_key.title()) or city_key.title()).strip()
+    state_name = (section.get("state", "") or "").strip()
+    district_name = (section.get("district", "") or "").strip()
+    city_slug = _city_slug(city_name)
+    city_key_us = city_slug.replace("-", "_")
+
+    configured_launch_index = (section.get("es_index", "") or "").strip()
+    configured_completed_index = (section.get("completed_es_index", "") or "").strip()
+    if configured_launch_index and configured_launch_index != DEFAULT_LAUNCH_INDEX:
+        logger.warning(
+            "Ignoring city-specific es_index=%s for %s; using shared index %s",
+            configured_launch_index,
+            section_name,
+            DEFAULT_LAUNCH_INDEX,
+        )
+    if configured_completed_index and configured_completed_index != DEFAULT_COMPLETED_INDEX:
+        logger.warning(
+            "Ignoring city-specific completed_es_index=%s for %s; using shared index %s",
+            configured_completed_index,
+            section_name,
+            DEFAULT_COMPLETED_INDEX,
+        )
+    es_index = DEFAULT_LAUNCH_INDEX
+    completed_es_index = DEFAULT_COMPLETED_INDEX
+    data_dir_value = (section.get("data_dir", "") or "").strip() or f"saved_data/property_launches/{city_key_us}"
+
+    return PropertyLaunchSettings(
+        city_key=city_key,
+        city=city_name,
+        state=state_name,
+        district=district_name,
+        duckduckgo_queries=[
+            q.strip() for q in section.get("duckduckgo_queries", f"pre launch apartments {city_name}").split(",") if q.strip()
+        ],
+        signature_dwellings_url=(section.get("signature_dwellings_url", "") or "").strip(),
+        prestige_prelaunch_url=(section.get("prestige_prelaunch_url", "") or "").strip(),
+        prestige_cityscape_url=(section.get("prestige_cityscape_url", "") or "").strip(),
+        realestateindia_url=(section.get("realestateindia_url", "") or "").strip(),
+        realestateindia_city_slug=(section.get("realestateindia_city_slug", "") or city_slug).strip().lower(),
+        realestateindia_localities=[l.strip() for l in section.get("realestateindia_localities", "").split(",") if l.strip()],
+        pages=int(section.get("pages", "10")),
+        duckduckgo_pages=int(section.get("duckduckgo_pages", "3")),
+        min_delay=float(section.get("min_delay_seconds", "2.0")),
+        max_delay=float(section.get("max_delay_seconds", "6.0")),
+        detail_retry=int(section.get("detail_retry_count", "3")),
+        request_timeout=int(section.get("request_timeout_seconds", "30")),
+        es_index=es_index,
+        completed_es_index=completed_es_index,
+        data_dir=Path(data_dir_value),
+        schedule_hour=(section.get("schedule_hour", "1") or "1").strip(),
+        schedule_minute=(section.get("schedule_minute", "0") or "0").strip(),
+        schedule_timezone=(section.get("schedule_timezone", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+    )
+
+
+_city_sections = _available_city_sections()
+if not _city_sections:
+    raise KeyError("No [property_launches.<city>] sections found in config.ini")
+
+DEFAULT_CITY = "kochi" if "kochi" in _city_sections else sorted(_city_sections)[0]
+SETTINGS = _load_settings_for_city(DEFAULT_CITY)
+ES_INDEX = SETTINGS.es_index
+COMPLETED_ES_INDEX = SETTINGS.completed_es_index
+
+_canonical_config = config["canonical_mapping"] if config.has_section("canonical_mapping") else {}
+if hasattr(_canonical_config, "get"):
+    try:
+        CANONICAL_ENABLED_RAW = _canonical_config.get("enabled", fallback="false")
+        CANONICAL_INDEX = _canonical_config.get("index", fallback=DEFAULT_CANONICAL_INDEX)
+        _max_ai_calls_raw = _canonical_config.get("max_ai_calls_per_run", fallback="150")
+        CANONICAL_AI_ENABLED_RAW = _canonical_config.get("ai_enabled", fallback="true")
+    except TypeError:
+        CANONICAL_ENABLED_RAW = _canonical_config.get("enabled", "false")
+        CANONICAL_INDEX = _canonical_config.get("index", DEFAULT_CANONICAL_INDEX)
+        _max_ai_calls_raw = _canonical_config.get("max_ai_calls_per_run", "150")
+        CANONICAL_AI_ENABLED_RAW = _canonical_config.get("ai_enabled", "true")
+else:
+    CANONICAL_ENABLED_RAW = "false"
+    CANONICAL_INDEX = DEFAULT_CANONICAL_INDEX
+    _max_ai_calls_raw = "150"
+    CANONICAL_AI_ENABLED_RAW = "true"
+
+CANONICAL_INDEX = (CANONICAL_INDEX or DEFAULT_CANONICAL_INDEX).strip()
+CANONICAL_MAX_AI_CALLS = int((_max_ai_calls_raw or "150"))
+CANONICAL_ENABLED = str(CANONICAL_ENABLED_RAW).strip().lower() in {"1", "true", "yes", "y", "on"}
+CANONICAL_AI_ENABLED = str(CANONICAL_AI_ENABLED_RAW).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _activate_settings(city: str | None) -> PropertyLaunchSettings:
+    global SETTINGS, ES_INDEX, COMPLETED_ES_INDEX
+    if city:
+        SETTINGS = _load_settings_for_city(city)
+        ES_INDEX = SETTINGS.es_index
+        COMPLETED_ES_INDEX = SETTINGS.completed_es_index
+    return SETTINGS
+
+
+def _activate_settings_from_records(records: list[dict[str, Any]]) -> PropertyLaunchSettings:
+    if not isinstance(SETTINGS, PropertyLaunchSettings):
+        return SETTINGS
+    city_key = ""
+    for rec in records:
+        city_key = (
+            _as_text(rec.get("target_city_key"))
+            or _as_text(rec.get("_target_city"))
+            or ""
+        ).strip().lower()
+        if city_key:
+            break
+    return _activate_settings(city_key or SETTINGS.city_key)
+
+
+def _saved_data_dir() -> Path:
+    out_dir = getattr(SETTINGS, "data_dir", Path("saved_data/property_launches/default"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _builder_tier_prompt() -> str:
+    region = getattr(SETTINGS, "state", "") or getattr(SETTINGS, "city", "") or "India"
+    return BUILDER_TIER_PROMPT_TEMPLATE.format(region=region)
+
+
+def _city_variants() -> set[str]:
+    variants: set[str] = set()
+    city = (getattr(SETTINGS, "city", "") or "").strip().lower()
+    if city:
+        variants.add(city)
+    city_slug = _city_slug(getattr(SETTINGS, "city", ""))
+    if city_slug:
+        variants.add(city_slug)
+        variants.add(city_slug.replace("-", " "))
+    return {v for v in variants if v}
+
+
+def _location_strip_terms() -> list[str]:
+    terms: set[str] = {"in", "by"}
+    for raw in (getattr(SETTINGS, "city", ""), getattr(SETTINGS, "state", ""), getattr(SETTINGS, "district", "")):
+        text = (raw or "").strip().lower()
+        if not text:
+            continue
+        terms.add(text)
+        terms.update(tok for tok in re.split(r"[\s\-]+", text) if tok)
+    return sorted(terms, key=len, reverse=True)
 
 
 def _build_http_client():
@@ -527,15 +690,334 @@ def _normalize_url(base_url: str, url: Any) -> str | None:
     return urljoin(base_url, text)
 
 
+def _is_generic_project_name(name: str | None) -> bool:
+    if not name:
+        return True
+    n = " ".join(name.lower().split())
+    generic_tokens = [
+        "similar listings",
+        "property for sale",
+        "buy apartments",
+        "new projects in",
+        "projects in",
+        "residential projects",
+        "commercial projects",
+        "a home surrounded",
+    ]
+    for city_variant in _city_variants():
+        generic_tokens.append(f"apartments in {city_variant}")
+        generic_tokens.append(f"villas in {city_variant}")
+    return any(tok in n for tok in generic_tokens)
+
+
+def _looks_like_project_entity_name(name: str | None) -> bool:
+    if not name:
+        return False
+    n = " ".join(name.lower().split())
+    if not n:
+        return False
+    if _is_generic_project_name(n):
+        return False
+
+    blocked_exact = {
+        "read more", "view details", "view project", "view all", "contact us",
+        "price", "brochure", "details", "enquire now", "learn more",
+    }
+    if n in blocked_exact:
+        return False
+
+    blocked_fragments = (
+        "new projects in", "projects in", "apartments in", "villas in",
+        "for sale", "property in", "residential property", "commercial property",
+    )
+    if any(tok in n for tok in blocked_fragments):
+        return False
+
+    words = [w for w in re.findall(r"[a-z0-9]+", n) if w]
+    if len(words) == 1 and len(words[0]) < 5:
+        return False
+    return True
+
+
+def _name_from_project_url(url: str) -> str | None:
+    if not url:
+        return None
+    u = url.lower()
+    if "/projects/" in u:
+        tail = u.split("/projects/", 1)[1].strip("/")
+        slug = tail.split("/")[0]
+    else:
+        slug = u.rstrip("/").split("/")[-1]
+    slug = re.sub(r"-pjid-\d+$", "", slug)
+    strip_terms = _location_strip_terms()
+    if strip_terms:
+        pattern = r"\b(" + "|".join(re.escape(t) for t in strip_terms) + r")\b"
+        slug = re.sub(pattern, " ", slug)
+    slug = re.sub(r"[^a-z0-9\s-]", " ", slug)
+    slug = re.sub(r"[-_]+", " ", slug)
+    slug = re.sub(r"\s+", " ", slug).strip()
+    if len(slug) < 3:
+        return None
+    return slug.title()
+
+
 def _generate_project_id(project_name: str, builder_name: str) -> str:
     name_norm = re.sub(r"\s+", " ", project_name.strip().lower())
     builder_norm = re.sub(r"\s+", " ", builder_name.strip().lower())
-    combined = f"{name_norm}|{builder_norm}"
+    city_component = _normalize_city_component(getattr(SETTINGS, "city_key", ""))
+    if city_component:
+        combined = f"{name_norm}|{builder_norm}|{city_component}"
+    else:
+        combined = f"{name_norm}|{builder_norm}"
+    return hashlib.sha1(combined.encode("utf-8")).hexdigest()
+
+
+def _normalize_city_component(value: Any) -> str:
+    text = (_as_text(value) or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text
+
+
+def _project_id_for_city(project_name: str, builder_name: str, city_key: str | None) -> str:
+    name_norm = re.sub(r"\s+", " ", project_name.strip().lower())
+    builder_norm = re.sub(r"\s+", " ", builder_name.strip().lower())
+    city_component = _normalize_city_component(city_key)
+    if city_component:
+        combined = f"{name_norm}|{builder_norm}|{city_component}"
+    else:
+        combined = f"{name_norm}|{builder_norm}"
     return hashlib.sha1(combined.encode("utf-8")).hexdigest()
 
 
 def _to_iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_CANONICAL_RESOLVER: CanonicalResolver | None = None
+
+
+def _infer_country(city: str | None, state: str | None) -> str | None:
+    c = (city or "").strip().lower()
+    s = (state or "").strip().lower()
+    if c in UAE_CITY_HINTS:
+        return "UAE"
+    if c in INDIA_CITY_HINTS or s in {"kerala", "karnataka", "maharashtra", "delhi", "tamil nadu"}:
+        return "India"
+    return None
+
+
+def _canonical_resolver() -> CanonicalResolver:
+    global _CANONICAL_RESOLVER
+    if not CANONICAL_ENABLED:
+        raise RuntimeError("Canonical mapping is disabled")
+    if _CANONICAL_RESOLVER is None:
+        _CANONICAL_RESOLVER = CanonicalResolver(
+            es_client(),
+            index=CANONICAL_INDEX,
+            max_ai_calls=CANONICAL_MAX_AI_CALLS,
+            ai_enabled=CANONICAL_AI_ENABLED,
+        )
+    return _CANONICAL_RESOLVER
+
+
+def _resolve_canonical(
+    dimension: str,
+    value: Any,
+    *,
+    context: dict[str, Any] | None = None,
+    country_guardrail: str | None = None,
+    source_index: str | None = None,
+    source_system: str | None = None,
+    evidence_url: str | None = None,
+    allow_ai: bool = True,
+) -> str | None:
+    text = _as_text(value)
+    if not text:
+        return None
+    if not CANONICAL_ENABLED:
+        return text
+    try:
+        resolved = _canonical_resolver().resolve(
+            dimension=dimension,
+            value=text,
+            context=context,
+            country_guardrail=country_guardrail,
+            source_index=source_index or SETTINGS.es_index,
+            source_system=source_system or "property_launches_pipeline",
+            evidence_url=evidence_url,
+            allow_ai=allow_ai,
+        )
+        canonical = _as_text((resolved or {}).get("canonical_value"))
+        return canonical or text
+    except Exception as exc:
+        logger.debug("Canonical resolve failed for %s='%s': %s", dimension, text, exc)
+        return text
+
+
+_MONTH_MAP = {
+    "january": "01", "jan": "01", "february": "02", "feb": "02",
+    "march": "03", "mar": "03", "april": "04", "apr": "04",
+    "may": "05", "june": "06", "jun": "06", "july": "07", "jul": "07",
+    "august": "08", "aug": "08", "september": "09", "sep": "09", "sept": "09",
+    "october": "10", "oct": "10", "november": "11", "nov": "11",
+    "december": "12", "dec": "12",
+}
+_QUARTER_MAP = {"q1": "03", "q2": "06", "q3": "09", "q4": "12"}
+
+
+def _normalize_possession_date(value: str | None) -> str | None:
+    """Normalize possession date to YYYY-MM format."""
+    if not value:
+        return None
+    raw = html.unescape(str(value)).replace("\xa0", " ").strip().lower()
+    raw = re.sub(r"\s+", " ", raw)
+
+    # Remove common prefixes
+    raw = re.sub(r'^(date|by|in|from|starting|around|expected|estimated|possession|completion|delivery|handover|occupancy|status)\s*[:\-]?\s*', '', raw)
+    raw = raw.strip(" .,:;-")
+
+    if not raw:
+        return None
+
+    if re.search(r'\bready\W*(?:to\W*(?:move|occupy)|for\W*occupancy)\b', raw, re.I):
+        return None
+
+    # reject non-possession contextual years (company age/history style)
+    if any(tok in raw for tok in ("since ", "from ", "estd", "established")):
+        return None
+
+    # YYYY-MM-DD
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', raw)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+
+    # YYYY-MM
+    m = re.match(r'^(\d{4})-(\d{2})$', raw)
+    if m:
+        return raw
+
+    # Month YYYY (e.g., "march 2028", "december 2028")
+    m = re.match(r'^([a-z]{3,9})[\s,\-/]+(\d{4})$', raw)
+    if m:
+        month = _MONTH_MAP.get(m.group(1))
+        if month:
+            return f"{m.group(2)}-{month}"
+
+    # Q1 2028, Q4 2028
+    m = re.match(r'^(q[1-4])[\s\-/]+(\d{4})$', raw)
+    if m:
+        month = _QUARTER_MAP.get(m.group(1))
+        if month:
+            return f"{m.group(2)}-{month}"
+
+    # Just year (e.g., "2028", "2030")
+    m = re.match(r'^(\d{4})$', raw)
+    if m:
+        return f"{m.group(1)}-01"
+
+    return None
+
+
+def _normalize_launch_status(value: Any) -> str | None:
+    text = _as_text(value)
+    if not text:
+        return None
+    s = text.strip().lower().replace("_", "-")
+    s = re.sub(r"\s+", "-", s)
+    if s.startswith("ready-to-move") or s.startswith("ready-for-occupancy"):
+        return "ready-to-move"
+    if "ready-to-move" in s or "ready-for-occupancy" in s:
+        return "ready-to-move"
+    if "under-construction" in s:
+        return "under-construction"
+    if "pre-launch" in s:
+        return "pre-launch"
+    if "new-launch" in s:
+        return "new-launch"
+    if "upcoming" in s:
+        return "upcoming"
+    return None
+
+
+def _extract_possession_metadata_from_text(text: str, source: str = "detail_regex") -> dict[str, Any]:
+    if not text:
+        return {}
+    t = html.unescape(text).replace("\xa0", " ")
+    t = " ".join(t.split())
+    out: dict[str, Any] = {}
+
+    date_patterns = (
+        r'(?:possession|completion|delivery|handover|occupancy)\W{0,24}(?:date|status)?\W{0,24}(?:by|in|from|starting|around|expected|estimated|on)?\W{0,24}(Q[1-4]\s*\d{4}|[A-Za-z]{3,9}\s+\d{4}|\d{4})',
+        r'(?:expected|estimated)\W{0,16}(?:possession|completion|handover)?\W{0,16}(Q[1-4]\s*\d{4}|[A-Za-z]{3,9}\s+\d{4}|\d{4})',
+    )
+    for p in date_patterns:
+        m = re.search(p, t, re.I)
+        if not m:
+            continue
+        norm = _normalize_possession_date(m.group(1))
+        if norm:
+            out["possession_date"] = norm
+            out["possession_source"] = source
+            token = m.group(1).strip().lower()
+            out["possession_confidence"] = "medium" if re.fullmatch(r"\d{4}", token) else "high"
+            break
+
+    status_match = re.search(
+        r'(pre[-\s]?launch|new[-\s]?launch|under[-\s]?construction|ready[-\s]?(?:to[-\s]?move|for[-\s]?occupancy)|upcoming)',
+        t,
+        re.I,
+    )
+    if status_match:
+        normalized = _normalize_launch_status(status_match.group(1))
+        if normalized:
+            out["launch_status"] = normalized
+
+    if re.search(r'\bready\W*(?:to\W*(?:move|occupy)|for\W*occupancy)\b', t, re.I):
+        out["launch_status"] = "ready-to-move"
+
+    if out.get("launch_status"):
+        out.setdefault("possession_source", source)
+        out.setdefault("possession_confidence", "high")
+    return out
+
+
+def _extract_realestateindia_possession_from_html(html_text: str) -> dict[str, Any]:
+    if not html_text:
+        return {}
+    txt = html.unescape(html_text).replace("\xa0", " ")
+    out: dict[str, Any] = {}
+    row_pattern = re.compile(
+        r'<p[^>]*class=["\'][^"\']*pf-lbl[^"\']*["\'][^>]*>.*?<span>\s*(Possession(?:\s+Status)?)\s*</span>.*?</p>\s*'
+        r'<p[^>]*class=["\'][^"\']*pf-val[^"\']*["\'][^>]*>(.*?)</p>',
+        re.I | re.S,
+    )
+    for m in row_pattern.finditer(txt):
+        label = re.sub(r"<[^>]+>", " ", m.group(1))
+        value = re.sub(r"<[^>]+>", " ", m.group(2))
+        value = " ".join(value.split())
+        if not value:
+            continue
+
+        if "status" in label.lower():
+            normalized = _normalize_launch_status(value)
+            if normalized:
+                out["launch_status"] = normalized
+                out["possession_source"] = "detail_realestateindia"
+                out["possession_confidence"] = "high"
+            continue
+
+        norm = _normalize_possession_date(value)
+        if norm:
+            out["possession_date"] = norm
+            out["possession_source"] = "detail_realestateindia"
+            out["possession_confidence"] = "high"
+    return out
+
+
+def _extract_possession_from_text(text: str) -> tuple[str | None, str | None, str | None]:
+    """Extract possession date with source/confidence from a text window."""
+    meta = _extract_possession_metadata_from_text(text, source="listing_card")
+    return meta.get("possession_date"), meta.get("possession_source"), meta.get("possession_confidence")
 
 
 def _normalize_images(value: Any) -> list[str] | None:
@@ -552,10 +1034,26 @@ def _normalize_images(value: Any) -> list[str] | None:
 
 def _looks_like_project_url(url: str) -> bool:
     lower = url.lower()
+    blocked_domains = (
+        "wa.me", "api.whatsapp.com", "twitter.com", "x.com", "facebook.com", "instagram.com",
+        "youtube.com", "pinterest.com", "play.google.com", "accounts.google.com",
+    )
+    if any(d in lower for d in blocked_domains):
+        return False
+
+    blocked_path_tokens = (
+        "/login", "/about", "/contact", "/blog", "/faq", "/privacy", "/terms",
+        "/for-rent", "/for-sale", "/property-type", "/agents", "/compare", "/advanced",
+        "/feed", "wp-json", "xmlrpc", "oembed",
+    )
+    if any(tok in lower for tok in blocked_path_tokens):
+        return False
+
     project_indicators = [
         "project", "property", "new-project", "new-launch",
         "pre-launch", "apartment", "villa", "flat", "resale",
         "listing", "detail", "overview",
+        "/projects/", "-pjid-",
     ]
     skip_extensions = (".jpg", ".jpeg", ".png", ".gif", ".svg", ".css", ".js", ".ico", ".woff", ".ttf")
     if any(url.lower().endswith(ext) for ext in skip_extensions):
@@ -563,30 +1061,9 @@ def _looks_like_project_url(url: str) -> bool:
     return any(ind in lower for ind in project_indicators)
 
 
-def _is_kochi_project(text: str, url: str = "") -> bool:
-    """Check if a project is specifically about Kochi/Kerala."""
-    lower_text = text.lower()
-    lower_url = url.lower()
-    combined = f"{lower_text} {lower_url}"
-    kochi_indicators = ["kochi", "kerala", "ernakulam", "kakkanad", "edappally", "maradu",
-                        "tripunithura", "kaloor", "panampilly", "thrikkakara", "elamkulam",
-                        "vennala", "palarivattom", "vytilla", "aluv", "angamali", "kalamasery",
-                        "kundannoor", "marine drive", "fort kochi", "mattancherry", "perumbavoor",
-                        "nedumbassery", "eroor", "thrippunithura", "kadavanthra", "vazhakkala"]
-    non_kochi_indicators = ["bangalore", "bengaluru", "mumbai", "delhi", "hyderabad", "chennai",
-                            "pune", "noida", "gurgaon", "devanahalli", "whitefield", "electronic city",
-                            "bannerghatta", "hebbal", "yelahanka", "sarjapur", "hosur road",
-                            "magadi road", "begur road", "budigere", "jigani", "kensington road",
-                            "outer ring road", "padil", "mangalore", "bidadi", "akshayanagar",
-                            "somerville", "suncrest", "waterford", "waterfront", "fernvale",
-                            "glenbrook", "greenmoor", "raintree park", "roshanara", "serenity shores",
-                            "park grove", "park ridge", "pine forest", "nandi hills", "oakville",
-                            "maple heights", "marigold", "landmark", "kings county", "eaton park",
-                            "evergreen", "falcon city", "camden", "century landmark", "county dale",
-                            "prosperity enclave", "sunset park"]
-    kochi_score = sum(2 if ind in ("kochi", "kerala", "ernakulam") else 1 for ind in kochi_indicators if ind in combined)
-    non_kochi_score = sum(1 for ind in non_kochi_indicators if ind in combined)
-    return kochi_score > non_kochi_score and kochi_score >= 1
+def _is_relevant_project(text: str, url: str = "") -> bool:
+    """Allow all projects - location will be extracted during enrichment."""
+    return True
 
 
 def _html_to_text(html_text: str) -> str:
@@ -594,6 +1071,7 @@ def _html_to_text(html_text: str) -> str:
     text = re.sub(r"<script[^>]*>.*?</script>", "", html_text, flags=re.S)
     text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.S)
     text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text).replace("\xa0", " ")
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -647,7 +1125,7 @@ def parse_duckduckgo_serp(html_text: str) -> list[dict[str, str]]:
 
 
 def parse_signature_dwellings(html_text: str) -> list[dict[str, Any]]:
-    """Parse Signature Dwellings Kochi page to extract individual project URLs."""
+    """Parse Signature Dwellings page to extract individual project URLs."""
     projects: list[dict[str, Any]] = []
     link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S)
     base_url = "https://signaturedwellingsprojects.com"
@@ -677,8 +1155,8 @@ def parse_signature_dwellings(html_text: str) -> list[dict[str, Any]]:
     return projects
 
 
-def parse_prestige_kochi_projects(html_text: str) -> list[dict[str, Any]]:
-    """Parse Prestige Prelaunch page to extract KOCHI-ONLY project URLs."""
+def parse_prestige_prelaunch_projects(html_text: str) -> list[dict[str, Any]]:
+    """Parse Prestige prelaunch page to extract project URLs."""
     projects: list[dict[str, Any]] = []
     link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S)
     base_url = "https://prestigeprelaunchprojects.com"
@@ -695,7 +1173,7 @@ def parse_prestige_kochi_projects(html_text: str) -> list[dict[str, Any]]:
             url = base_url + "/" + url
         if any(skip in url.lower() for skip in ("/about", "/contact", "/privacy", "/terms", "/blog", "/sitemap", "/shopdetail")):
             continue
-        if not _is_kochi_project(name, url):
+        if not _is_relevant_project(name, url):
             continue
         projects.append({
             "project_name": name,
@@ -708,10 +1186,78 @@ def parse_prestige_kochi_projects(html_text: str) -> list[dict[str, Any]]:
 
 
 def parse_realestateindia_locality(html_text: str, locality: str = "") -> list[dict[str, Any]]:
-    """Parse RealEstateIndia locality page to extract individual project URLs."""
+    """Parse RealEstateIndia locality page to extract project cards.
+
+    This source often exposes projects via /projects/... links directly on locality
+    listing pages. We keep these as listing-quality records even when detail pages
+    are partially blocked.
+    """
     projects: list[dict[str, Any]] = []
-    link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S)
+    link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S | re.I)
     base_url = "https://www.realestateindia.com"
+    seen: set[str] = set()
+
+    def _add(url: str, name: str, snippet: str = "") -> None:
+        if not url or not name or len(name) < 3:
+            return
+        lurl = url.lower()
+        if "/projects/" not in lurl and "-pjid-" not in lurl:
+            return
+        if url in seen:
+            return
+        seen.add(url)
+
+        candidate_name = name
+        if _is_generic_project_name(candidate_name):
+            candidate_name = _name_from_project_url(url) or candidate_name
+        if not _looks_like_project_entity_name(candidate_name):
+            return
+
+        rec: dict[str, Any] = {
+            "project_name": candidate_name,
+            "project_url": url,
+            "source_url": url,
+            "source": "realestateindia",
+            "data_quality": "listing",
+        }
+        if locality:
+            rec["locality"] = locality.replace("-", " ").title()
+            rec["city"] = getattr(SETTINGS, "city", "") or rec.get("city")
+            rec["state"] = getattr(SETTINGS, "state", "") or rec.get("state")
+
+        s = " ".join(snippet.split())
+        b = re.search(r'([A-Za-z][A-Za-z\s&\.-]{2,40})\s+(?:by|By)\s+([A-Za-z][A-Za-z\s&\.-]{2,40})', s)
+        if b:
+            rec["project_name"] = b.group(1).strip()
+            rec["builder_name"] = b.group(2).strip()
+
+        bhk = re.findall(r'(\d+)\s*BHK', s, re.I)
+        if bhk:
+            rec["configurations"] = [f"{n}BHK" for n in dict.fromkeys(bhk)]
+
+        p = re.search(r'(?:₹|Rs\.?)[^A-Za-z]{0,8}([0-9][0-9,\.]*)\s*(Cr|Crore|Lac|Lakh|K|M)?', s, re.I)
+        if p:
+            price_text = p.group(0)
+            pmin, pmax, _ = _parse_price(price_text)
+            if pmin:
+                rec["price_min"] = pmin
+            if pmax:
+                rec["price_max"] = pmax
+
+        pos = re.search(r'(?:possession|completion)\s*(?:by|in|:)?\s*(Q[1-4]\s*\d{4}|[A-Za-z]+\s+\d{4}|\d{4})', s, re.I)
+        if pos:
+            rec["possession_date"] = pos.group(1).strip()
+            rec["possession_source"] = "listing_card"
+            rec["possession_confidence"] = "medium"
+
+        # stricter extractor overrides weak match when available
+        pdate, psrc, pconf = _extract_possession_from_text(s)
+        if pdate is not None:
+            rec["possession_date"] = pdate
+            rec["possession_source"] = psrc
+            rec["possession_confidence"] = pconf
+
+        projects.append(rec)
 
     for match in link_pattern.finditer(html_text):
         url = match.group(1)
@@ -723,18 +1269,64 @@ def parse_realestateindia_locality(html_text: str, locality: str = "") -> list[d
             url = base_url + url
         elif not url.startswith("http"):
             url = base_url + "/" + url
-        if any(skip in url.lower() for skip in ("/kochi-property/new-projects", "/property-type", "/about", "/contact")):
+        lurl = url.lower()
+        if any(skip in lurl for skip in ("/property-type", "/about", "/contact", "/for-rent", "/for-sale")):
             continue
-        if "new-projects" not in url.lower() and "project" not in name.lower():
+        # Prefer true project pages
+        if "/projects/" in lurl:
+            window = html_text[max(0, match.start() - 1000): match.end() + 1200]
+            _add(url, name, window)
             continue
-        if locality:
-            name = f"{name} - {locality.title()}"
-        projects.append({
-            "project_name": name,
-            "project_url": url,
-            "source_url": url,
-            "source": "realestateindia",
-        })
+    return projects
+
+
+def parse_addressofchoice_listing(html_text: str) -> list[dict[str, Any]]:
+    """Parse AddressOfChoice listing pages into listing-quality project leads."""
+    projects: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    link_pattern = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.S | re.I)
+    base_url = "https://www.addressofchoice.com"
+
+    for match in link_pattern.finditer(html_text):
+        href = match.group(1)
+        text = re.sub(r"<[^>]+>", "", match.group(2)).strip()
+        if not href:
+            continue
+        if href.startswith("/"):
+            href = base_url + href
+        elif not href.startswith("http"):
+            href = base_url + "/" + href
+        lhref = href.lower()
+        if any(s in lhref for s in ("/under-", "/for-sale", "/apartments", "/villas", "/property-in-")):
+            # category pages can still contain embedded project cards; skip direct add
+            continue
+        if not any(tok in lhref for tok in ("project", "new-project", "pre-launch", "property-details", "overview")):
+            continue
+        if href in seen:
+            continue
+
+        city_tokens = _city_variants()
+        if city_tokens and not any(tok in lhref or tok in text.lower() for tok in city_tokens):
+            continue
+        candidate_name = text
+        if _is_generic_project_name(candidate_name) or len(candidate_name) < 4:
+            candidate_name = _name_from_project_url(href) or candidate_name
+        if not _looks_like_project_entity_name(candidate_name):
+            candidate_name = _name_from_project_url(href) or candidate_name
+        if not _looks_like_project_entity_name(candidate_name):
+            continue
+
+        rec: dict[str, Any] = {
+            "project_name": candidate_name,
+            "project_url": href,
+            "source_url": href,
+            "source": "addressofchoice",
+            "data_quality": "listing",
+            "city": getattr(SETTINGS, "city", "") or None,
+            "state": getattr(SETTINGS, "state", "") or None,
+        }
+        seen.add(href)
+        projects.append(rec)
     return projects
 
 
@@ -802,9 +1394,17 @@ def parse_project_detail_page(html_text: str, source: str = "") -> dict[str, Any
         if img_url:
             detail["images"] = [img_url]
 
+    source_l = (source or "").lower()
     text = _html_to_text(html_text)
 
-    name_match = re.search(r'(?:Prestige|Signature|Asset|Sobha|Godrej|Puravankara|Brigade|SFS|Serene|Anta)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+at|\s+in|\s+Kochi|\s+\||\s+-)', text, re.I)
+    configured_city = getattr(SETTINGS, "city", "") or ""
+    city_regex = re.escape(configured_city) if configured_city else ""
+    city_alt = rf"|\s+{city_regex}" if city_regex else ""
+    name_match = re.search(
+        rf'(?:Prestige|Signature|Asset|Sobha|Godrej|Puravankara|Brigade|SFS|Serene|Anta)\s+([A-Za-z][A-Za-z\s]+?)(?:\s+at|\s+in{city_alt}|\s+\||\s+-)',
+        text,
+        re.I,
+    )
     if name_match and not detail.get("project_name"):
         detail["project_name"] = name_match.group(1).strip()
 
@@ -830,7 +1430,13 @@ def parse_project_detail_page(html_text: str, source: str = "") -> dict[str, Any
     if area_match:
         detail["super_area_min_sqft"] = _parse_area(area_match.group(0))
 
-    locality_match = re.search(r'(?:at|in|located)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s*Kochi', text)
+    locality_match = None
+    if configured_city:
+        locality_match = re.search(
+            rf'(?:at|in|located)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),?\s*{re.escape(configured_city)}',
+            text,
+            re.I,
+        )
     if locality_match:
         detail["locality"] = locality_match.group(1).strip()
 
@@ -838,13 +1444,28 @@ def parse_project_detail_page(html_text: str, source: str = "") -> dict[str, Any
     if rera_match:
         detail["rera_number"] = rera_match.group(1).strip()
 
-    possession_match = re.search(r'(?:possession|completion)\s*(?:date)?\s*([A-Z][a-z]+\s+\d{4})', text, re.I)
-    if possession_match:
-        detail["possession_date"] = possession_match.group(1).strip()
+    possession_meta = _extract_possession_metadata_from_text(text, source="detail_regex")
+    if possession_meta.get("possession_date") and not detail.get("possession_date"):
+        detail["possession_date"] = possession_meta["possession_date"]
+        detail["possession_source"] = possession_meta.get("possession_source", "detail_regex")
+        detail["possession_confidence"] = possession_meta.get("possession_confidence", "medium")
+    if possession_meta.get("launch_status") and not detail.get("launch_status"):
+        detail["launch_status"] = possession_meta["launch_status"]
 
-    launch_match = re.search(r'(pre-launch|new-launch|under-construction|ready-to-move|upcoming)', text, re.I)
-    if launch_match:
-        detail["launch_status"] = launch_match.group(1).lower()
+    if "realestateindia" in source_l:
+        rei_meta = _extract_realestateindia_possession_from_html(html_text)
+        if rei_meta.get("possession_date"):
+            detail["possession_date"] = rei_meta["possession_date"]
+            detail["possession_source"] = rei_meta.get("possession_source", "detail_realestateindia")
+            detail["possession_confidence"] = rei_meta.get("possession_confidence", "high")
+        if rei_meta.get("launch_status"):
+            detail["launch_status"] = rei_meta["launch_status"]
+
+    launch_match = re.search(r'(pre[-\s]?launch|new[-\s]?launch|under[-\s]?construction|ready[-\s]?(?:to[-\s]?move|for[-\s]?occupancy)|upcoming)', text, re.I)
+    if launch_match and not detail.get("launch_status"):
+        normalized = _normalize_launch_status(launch_match.group(1))
+        if normalized:
+            detail["launch_status"] = normalized
 
     type_match = re.search(r'TYPE\s*:\s*([A-Za-z\s]+?)(?:\s+Price|$)', text, re.I)
     if type_match:
@@ -859,9 +1480,20 @@ def parse_project_detail_page(html_text: str, source: str = "") -> dict[str, Any
         if desc_match:
             detail["project_description"] = desc_match.group(1).strip()
 
+    # Extract amenities - look for structured lists, not nav text
+    AMENITY_KEYWORDS = ["pool", "gym", "club", "parking", "security", "garden", "play", "jogging",
+                        "lift", "power backup", "water", "gas", "intercom", "cctv", "fire safety",
+                        "badminton", "tennis", "cricket", "basketball", "spa", "sauna", "steam",
+                        "yoga", "meditation", "library", "banquet", "party hall", "community hall",
+                        "guest room", "servant", "pet area", "roof top", "terrace", "balcony",
+                        "swimming", "fitness", "indoor games", "outdoor games"]
     amenities_section = re.search(r'(?:amenities|facilities)[\s:]+([^.]{50,500})', text, re.I)
     if amenities_section:
-        detail["amenities"] = _normalize_amenities(amenities_section.group(1))
+        raw_amenities = amenities_section.group(1)
+        # Only use if it contains actual amenity keywords
+        has_amenity = any(kw in raw_amenities.lower() for kw in AMENITY_KEYWORDS)
+        if has_amenity:
+            detail["amenities"] = _normalize_amenities(raw_amenities)
 
     return {key: value for key, value in detail.items() if value not in (None, [], "")}
 
@@ -948,40 +1580,48 @@ def parse_llm_json(text: str) -> Any:
         raise ValueError(f"Could not parse/repair JSON. Starts with: {snippet}") from e
 
 
-def call_gemini(payload: dict) -> requests.Response:
-    for attempt in range(1, MAX_RETRIES_V2 + 1):
-        resp = requests.post(GEMINI_V2_URL, json=payload, headers=GEMINI_HEADERS, params=GEMINI_PARAMS, timeout=30)
-        if resp.status_code == 200:
-            return resp
-        if resp.status_code != 429:
-            resp.raise_for_status()
-        time.sleep(2 ** attempt)
-    for attempt in range(1, MAX_RETRIES_V1_5 + 1):
-        resp = requests.post(GEMINI_V1_5_URL, json=payload, headers=GEMINI_HEADERS, params=GEMINI_PARAMS, timeout=30)
-        if resp.status_code == 200:
-            return resp
-        if resp.status_code != 429:
-            resp.raise_for_status()
-        time.sleep(2 ** attempt)
-    raise RuntimeError("Gemini API: exhausted retries on both 2.0-flash and 1.5-flash")
-
-
 def ai_extract_project(text: str) -> dict[str, Any]:
-    payload = {
-        "system_instruction": {
-            "parts": [{"text": "You are an extraction engine. Return ONE compact JSON object with exactly the keys I list. Strings must NOT contain literal line-breaks - escape them as \\n. No markdown, no code fences, no explanatory text. If a value is missing use null."}]
-        },
-        "contents": [{"parts": [{"text": f"{PROJECT_EXTRACT_PROMPT}\n\nText to extract from:\n{text[:8000]}"}]}],
-        "generation_config": {"response_mime_type": "application/json", "temperature": 0.0},
-    }
+    system_prompt = (
+        "You are an extraction engine. Return ONE compact JSON object with exactly the keys I list. "
+        "Strings must NOT contain literal line-breaks - escape them as \\n. "
+        "No markdown, no code fences, no explanatory text. If a value is missing use null."
+    )
+    user_prompt = f"{PROJECT_EXTRACT_PROMPT}\n\nText to extract from:\n{text[:8000]}"
     try:
-        response = call_gemini(payload)
-        if response.status_code == 200:
-            result = response.json()
-            result_text = result["candidates"][0]["content"]["parts"][0]["text"]
-            return parse_llm_json(result_text)
+        result_text = call_llm(system_prompt=system_prompt, user_prompt=user_prompt, json_mode=True)
+        return parse_llm_json(result_text)
     except Exception as exc:
         logger.warning("AI extraction failed: %s", exc)
+    return {}
+
+
+def ai_extract_possession(text: str) -> dict[str, Any]:
+    system_prompt = (
+        "You are an extraction engine. Return ONE compact JSON object only. "
+        "No markdown, no code fences, no explanatory text."
+    )
+    user_prompt = f"{POSSESSION_BACKFILL_PROMPT}\n\nText:\n{text[:7000]}"
+    try:
+        result_text = call_llm(system_prompt=system_prompt, user_prompt=user_prompt, json_mode=True)
+        parsed = parse_llm_json(result_text)
+        out: dict[str, Any] = {}
+        pdate = _normalize_possession_date(_as_text(parsed.get("possession_date")))
+        if pdate:
+            out["possession_date"] = pdate
+        pquarter = _as_text(parsed.get("possession_quarter"))
+        if pquarter:
+            out["possession_quarter"] = pquarter
+        lstatus = _normalize_launch_status(parsed.get("launch_status"))
+        if lstatus:
+            out["launch_status"] = lstatus
+        conf = _as_text(parsed.get("confidence"))
+        if conf:
+            out["possession_confidence"] = conf.lower()
+        if out:
+            out["possession_source"] = "llm"
+        return out
+    except Exception as exc:
+        logger.warning("AI possession extraction failed: %s", exc)
     return {}
 
 
@@ -1026,20 +1666,12 @@ def ai_classify_builder(builder_name: str, project_details: dict[str, Any]) -> s
     if project_details.get("amenities"):
         context += f", Amenities: {', '.join(project_details['amenities'][:5])}"
 
-    payload = {
-        "system_instruction": {"parts": [{"text": BUILDER_TIER_PROMPT}]},
-        "contents": [{"parts": [{"text": context}]}],
-        "generation_config": {"response_mime_type": "application/json", "temperature": 0.0},
-    }
     try:
-        response = call_gemini(payload)
-        if response.status_code == 200:
-            result = response.json()
-            result_text = result["candidates"][0]["content"]["parts"][0]["text"]
-            parsed = parse_llm_json(result_text)
-            tier = parsed.get("builder_tier", "").strip().lower()
-            if tier in ("luxury", "premium", "mid-segment", "affordable"):
-                return tier
+        result_text = call_llm(system_prompt=_builder_tier_prompt(), user_prompt=context, json_mode=True)
+        parsed = parse_llm_json(result_text)
+        tier = parsed.get("builder_tier", "").strip().lower()
+        if tier in ("luxury", "premium", "mid-segment", "affordable"):
+            return tier
     except Exception as exc:
         logger.warning("AI builder classification failed for %s: %s", builder_name, exc)
     return "mid-segment"
@@ -1051,9 +1683,99 @@ def ai_classify_builder(builder_name: str, project_details: dict[str, Any]) -> s
 
 def normalize_project_record(raw: dict[str, Any], discovered_at: str | None = None) -> dict[str, Any]:
     project_name = _as_text(raw.get("project_name", ""))
-    builder_name = _as_text(raw.get("builder_name", "")) or "Unknown"
+    if _is_generic_project_name(project_name):
+        project_name = _name_from_project_url(_as_text(raw.get("project_url")) or "") or project_name
+    builder_name = _as_text(raw.get("builder_name", ""))
     if not project_name:
         return {}
+
+    # Skip generic listing headings that are not project entities
+    if _is_generic_project_name(project_name):
+        return {}
+
+    # Fix: if builder_name is too similar to project_name, it's likely a hallucination
+    if builder_name:
+        proj_words = set(project_name.lower().split())
+        builder_words = set(builder_name.lower().split())
+        if builder_words and builder_words.issubset(proj_words):
+            builder_name = None
+        elif proj_words and proj_words.issubset(builder_words):
+            builder_name = None
+        elif len(proj_words) > 0 and len(builder_words) > 0:
+            overlap = len(proj_words & builder_words) / max(len(proj_words), len(builder_words))
+            if overlap > 0.8:
+                builder_name = None
+
+    builder_name = builder_name or "Unknown"
+
+    source_system = _as_text(raw.get("source")) or "property_launches_pipeline"
+    evidence_candidate = _as_text(raw.get("project_url")) or _as_text(raw.get("source_url")) or ""
+    evidence_url = evidence_candidate if evidence_candidate.startswith("http") else None
+
+    raw_city = _as_text(raw.get("city") or raw.get("target_city") or getattr(SETTINGS, "city", ""))
+    raw_state = _as_text(raw.get("state") or getattr(SETTINGS, "state", ""))
+    raw_country = _as_text(raw.get("country")) or _infer_country(raw_city, raw_state)
+
+    canonical_country = _resolve_canonical(
+        "country",
+        raw_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=False,
+    )
+    canonical_state = _resolve_canonical(
+        "state",
+        raw_state,
+        context={"country": canonical_country},
+        country_guardrail=canonical_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=False,
+    )
+    canonical_city = _resolve_canonical(
+        "city",
+        raw_city,
+        context={"country": canonical_country, "state": canonical_state},
+        country_guardrail=canonical_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=False,
+    )
+
+    canonical_builder = _resolve_canonical(
+        "builder_name",
+        builder_name,
+        context={"country": canonical_country, "state": canonical_state, "city": canonical_city},
+        country_guardrail=canonical_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=True,
+    )
+
+    canonical_project = _resolve_canonical(
+        "project_name",
+        project_name,
+        context={
+            "country": canonical_country,
+            "state": canonical_state,
+            "city": canonical_city,
+            "builder_name": canonical_builder or builder_name,
+            "builder_key": _normalize_city_component(canonical_builder or builder_name),
+        },
+        country_guardrail=canonical_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=True,
+    )
+
+    project_name = canonical_project or project_name
+    builder_name = canonical_builder or builder_name
+
     record: dict[str, Any] = {}
     for key in STANDARD_SCHEMA_FIELDS:
         if key in raw:
@@ -1062,10 +1784,51 @@ def normalize_project_record(raw: dict[str, Any], discovered_at: str | None = No
             record[key] = None
     record["project_name"] = project_name
     record["builder_name"] = builder_name
-    record["city"] = raw.get("city") or "Kochi"
-    record["state"] = raw.get("state") or "Kerala"
+    target_city_key = (
+        _normalize_city_component(raw.get("target_city_key"))
+        or _normalize_city_component(raw.get("_target_city"))
+        or _normalize_city_component(getattr(SETTINGS, "city_key", ""))
+        or _normalize_city_component(raw.get("city"))
+        or "unknown"
+    )
+    target_city = (
+        _as_text(raw.get("target_city"))
+        or getattr(SETTINGS, "city", "")
+        or _as_text(raw.get("city"))
+        or target_city_key.replace("-", " ").title()
+    )
+    target_city = _resolve_canonical(
+        "city",
+        target_city,
+        context={"country": canonical_country, "state": canonical_state},
+        country_guardrail=canonical_country,
+        source_index=SETTINGS.es_index,
+        source_system=source_system,
+        evidence_url=evidence_url,
+        allow_ai=False,
+    ) or target_city
+
+    record["target_city_key"] = target_city_key
+    record["target_city"] = target_city
+    # Use extracted city if available, otherwise configured defaults
+    record["city"] = canonical_city or raw.get("city") or raw.get("district") or getattr(SETTINGS, "city", "") or target_city or "Unknown"
+    record["state"] = canonical_state or raw.get("state") or getattr(SETTINGS, "state", "") or "Unknown"
+    if canonical_country:
+        record["country"] = canonical_country
     record["price_currency"] = raw.get("price_currency") or "INR"
-    if not record.get("launch_status"):
+    if not record.get("data_quality"):
+        if raw.get("data_quality") in ("detail", "listing", "lead"):
+            record["data_quality"] = raw.get("data_quality")
+        elif raw.get("project_description") or raw.get("images") or raw.get("rera_number"):
+            record["data_quality"] = "detail"
+        elif raw.get("project_name") and (raw.get("locality") or raw.get("configurations") or raw.get("price_min")):
+            record["data_quality"] = "listing"
+        else:
+            record["data_quality"] = "lead"
+    normalized_status = _normalize_launch_status(record.get("launch_status"))
+    if normalized_status:
+        record["launch_status"] = normalized_status
+    elif not record.get("launch_status"):
         record["launch_status"] = "new-launch"
     if record.get("price_min") is not None:
         record["price_min"] = int(record["price_min"])
@@ -1073,6 +1836,8 @@ def normalize_project_record(raw: dict[str, Any], discovered_at: str | None = No
         record["price_max"] = int(record["price_max"])
     if record.get("price_per_sqft") is not None:
         record["price_per_sqft"] = int(record["price_per_sqft"])
+    # Normalize possession date to YYYY-MM format
+    record["possession_date"] = _normalize_possession_date(record.get("possession_date"))
     record["property_types"] = record.get("property_types") or []
     record["configurations"] = record.get("configurations") or []
     record["amenities"] = record.get("amenities") or []
@@ -1084,7 +1849,7 @@ def normalize_project_record(raw: dict[str, Any], discovered_at: str | None = No
     if not record.get("discovered_at"):
         record["discovered_at"] = now_iso
     record["updated_at"] = _to_iso_now()
-    record["id"] = _generate_project_id(project_name, builder_name)
+    record["id"] = _project_id_for_city(project_name, builder_name, target_city_key)
     list_keys = {"property_types", "configurations", "amenities", "project_highlights"}
     mandatory_keys = set(MANDATORY_FIELDS)
     cleaned: dict[str, Any] = {}
@@ -1099,6 +1864,7 @@ def normalize_project_record(raw: dict[str, Any], discovered_at: str | None = No
 
 
 def deduplicate_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    quality_rank = {"lead": 1, "listing": 2, "detail": 3}
     by_id: dict[str, dict[str, Any]] = {}
     for project in projects:
         pid = project.get("id")
@@ -1118,6 +1884,10 @@ def deduplicate_projects(projects: list[dict[str, Any]]) -> list[dict[str, Any]]
                         if s:
                             merged_sources.add(s)
                     merged["source"] = ",".join(sorted(merged_sources))
+                elif key == "data_quality":
+                    a = quality_rank.get(str(existing.get("data_quality", "lead")).lower(), 1)
+                    b = quality_rank.get(str(value).lower(), 1)
+                    merged["data_quality"] = value if b >= a else existing.get("data_quality", value)
                 elif key in ("price_min", "price_max"):
                     existing_val = existing.get(key)
                     if existing_val is None:
@@ -1162,6 +1932,8 @@ ES_INDEX_MAPPING = {
             "builder_name": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
             "builder_tier": {"type": "keyword"},
             "launch_status": {"type": "keyword"},
+            "target_city_key": {"type": "keyword"},
+            "target_city": {"type": "keyword"},
             "property_types": {"type": "keyword"},
             "configurations": {"type": "keyword"},
             "locality": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
@@ -1170,7 +1942,10 @@ ES_INDEX_MAPPING = {
             "price_max": {"type": "long"},
             "price_per_sqft": {"type": "long"},
             "rera_number": {"type": "keyword"},
+            "possession_source": {"type": "keyword"},
+            "possession_confidence": {"type": "keyword"},
             "source": {"type": "keyword"},
+            "data_quality": {"type": "keyword"},
             "project_url": {"type": "keyword"},
             "source_url": {"type": "keyword"},
             "project_description": {"type": "text"},
@@ -1209,6 +1984,64 @@ def es_doc_exists(es: Elasticsearch, index: str, doc_id: str) -> bool:
         return False
 
 
+def _is_completed_status(status: Any) -> bool:
+    return _normalize_launch_status(status) == "ready-to-move"
+
+
+def _split_projects_by_status(projects: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    launches: list[dict[str, Any]] = []
+    completed: list[dict[str, Any]] = []
+    for rec in projects:
+        if _is_completed_status(rec.get("launch_status")):
+            completed.append(rec)
+        else:
+            launches.append(rec)
+    return launches, completed
+
+
+def delete_projects_from_index(es: Elasticsearch, index: str, doc_ids: list[str]) -> int:
+    unique_ids = [doc_id for doc_id in dict.fromkeys(doc_ids) if doc_id]
+    if not unique_ids:
+        return 0
+    try:
+        if not es.indices.exists(index=index):
+            return 0
+    except Exception:
+        logger.warning("Failed to verify index exists before delete: %s", index)
+        return 0
+    existing_ids: list[str] = []
+    try:
+        for i in range(0, len(unique_ids), 500):
+            chunk = unique_ids[i:i + 500]
+            mget_result = es.mget(index=index, body={"ids": chunk})
+            for doc in mget_result.get("docs", []):
+                if doc.get("found") and doc.get("_id"):
+                    existing_ids.append(doc["_id"])
+    except Exception as exc:
+        logger.warning("Failed to pre-check delete IDs for index %s: %s", index, exc)
+        return 0
+
+    if not existing_ids:
+        return 0
+
+    actions = [{"_op_type": "delete", "_index": index, "_id": doc_id} for doc_id in existing_ids]
+    try:
+        deleted, errors = helpers.bulk(
+            es,
+            actions,
+            chunk_size=500,
+            request_timeout=120,
+            raise_on_error=False,
+            raise_on_exception=False,
+        )
+    except Exception:
+        logger.exception("Elasticsearch bulk delete failed for index %s", index)
+        raise
+    if errors:
+        logger.warning("ES bulk delete completed with %d errors (index=%s)", len(errors), index)
+    return deleted
+
+
 def df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
     clean = df.replace({np.nan: None})
     for record in clean.to_dict(orient="records"):
@@ -1223,19 +2056,24 @@ def df_to_actions(df: pd.DataFrame, index: str) -> Iterable[dict[str, Any]]:
         }
 
 
-def index_projects_to_es(projects: list[dict[str, Any]], es: Elasticsearch | None = None) -> int:
+def index_projects_to_es(
+    projects: list[dict[str, Any]],
+    es: Elasticsearch | None = None,
+    index: str | None = None,
+) -> int:
+    target_index = index or SETTINGS.es_index
     if not projects:
-        logger.info("No projects to index into Elasticsearch (%s)", SETTINGS.es_index)
+        logger.info("No projects to index into Elasticsearch (%s)", target_index)
         return 0
 
     if es is None:
         es = es_client()
-    ensure_index(es, SETTINGS.es_index)
+    ensure_index(es, target_index)
 
     df = pd.DataFrame(projects)
     df = df.drop_duplicates(subset=["id"], keep="last").reset_index(drop=True)
 
-    actions = list(df_to_actions(df, SETTINGS.es_index))
+    actions = list(df_to_actions(df, target_index))
     if not actions:
         logger.info("No serializable project records for Elasticsearch")
         return 0
@@ -1254,8 +2092,8 @@ def index_projects_to_es(projects: list[dict[str, Any]], es: Elasticsearch | Non
         raise
 
     if errors:
-        logger.warning("ES bulk indexing completed with %d errors (index=%s)", len(errors), SETTINGS.es_index)
-    logger.info("Indexed %d project records into ES index %s", indexed, SETTINGS.es_index)
+        logger.warning("ES bulk indexing completed with %d errors (index=%s)", len(errors), target_index)
+    logger.info("Indexed %d project records into ES index %s", indexed, target_index)
     return indexed
 
 
@@ -1279,15 +2117,26 @@ async def _fetch_detail_with_retry(session, url: str | None, use_curl_cffi: bool
 
 
 class InputParams(BaseModel):
-    pass
+    city: str = DEFAULT_CITY
+
+
+def _refresh_settings_after_patch() -> None:
+    global SETTINGS
+    try:
+        if isinstance(SETTINGS, PropertyLaunchSettings):
+            SETTINGS = _load_settings_for_city(SETTINGS.city_key)
+    except Exception:
+        pass
 
 
 @task
-async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, Any]]:
+async def discover_projects(params: InputParams = None) -> list[dict[str, Any]]:
     """Two-level discovery:
     Level 1: Find listing pages via DuckDuckGo + portal homepages
     Level 2: Visit listing pages to extract individual project URLs
     """
+    selected_city = (params.city if params else DEFAULT_CITY)
+    _activate_settings(selected_city)
     session, use_curl = _build_http_client()
     discovered: list[dict[str, Any]] = []
     now = _to_iso_now()
@@ -1299,6 +2148,7 @@ async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, 
         if url and url not in seen_urls:
             seen_urls.add(url)
             proj["discovered_at"] = now
+            proj["_target_city"] = SETTINGS.city_key
             discovered.append(proj)
 
     def add_listing_url(url: str):
@@ -1325,7 +2175,7 @@ async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, 
     # --- Level 1: Visit portal homepages for individual project URLs ---
     portal_configs = [
         ("signature_dwellings", SETTINGS.signature_dwellings_url, parse_signature_dwellings),
-        ("prestige_prelaunch", SETTINGS.prestige_prelaunch_kochi_url, parse_prestige_kochi_projects),
+        ("prestige_prelaunch", SETTINGS.prestige_prelaunch_url, parse_prestige_prelaunch_projects),
     ]
     for portal_name, base_url, parser in portal_configs:
         if not base_url:
@@ -1345,7 +2195,8 @@ async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, 
         logger.info("Scraping RealEstateIndia main page")
         try:
             html_text = _fetch(session, SETTINGS.realestateindia_url, retries=2, use_curl_cffi=use_curl)
-            locality_links = re.findall(r'href=["\'](/kochi-property/new-projects-in-[^"\']+)["\']', html_text)
+            city_slug = re.escape(SETTINGS.realestateindia_city_slug or _city_slug(SETTINGS.city))
+            locality_links = re.findall(rf'href=["\'](/{city_slug}-property/new-projects-in-[^"\']+)["\']', html_text)
             for locality_path in locality_links[:10]:
                 locality_url = f"https://www.realestateindia.com{locality_path}"
                 locality_name = locality_path.split("-")[-1].replace(".htm", "")
@@ -1363,28 +2214,40 @@ async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, 
             logger.warning("Failed to scrape RealEstateIndia: %s", exc)
 
     # --- Level 2: Visit DuckDuckGo-discovered listing pages to extract individual projects ---
-    for listing_url in listing_urls_to_visit[:15]:
+    max_listing_visits = min(120, max(20, len(listing_urls_to_visit)))
+    for listing_url in listing_urls_to_visit[:max_listing_visits]:
         logger.info("Visiting listing page: %s", listing_url)
         try:
             html_text = _fetch(session, listing_url, retries=1, use_curl_cffi=use_curl)
             text = _html_to_text(html_text)
+
+            lurl = listing_url.lower()
+            if "realestateindia.com" in lurl:
+                projects = parse_realestateindia_locality(html_text)
+                for p in projects:
+                    add_project(p)
+            elif "addressofchoice.com" in lurl:
+                projects = parse_addressofchoice_listing(html_text)
+                for p in projects:
+                    add_project(p)
+
             links = re.findall(r'href=["\']([^"\']+)["\']', html_text)
             for link in links:
                 if link.startswith("http") and _looks_like_project_url(link) and link not in seen_urls:
-                    if _is_kochi_project(text, link):
+                    if _is_relevant_project(text, link):
                         add_project({
                             "project_name": "",
                             "project_url": link,
                             "source_url": link,
                             "source": "discovered_listing",
+                            "data_quality": "lead",
                         })
         except Exception as exc:
             logger.warning("Failed to visit listing page %s: %s", listing_url, exc)
         await asyncio.sleep(random.uniform(SETTINGS.min_delay, SETTINGS.max_delay))
 
     logger.info("Total discovered: %d individual project entries", len(discovered))
-    out_dir = Path("saved_data/kochi_launches")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _saved_data_dir()
     df = pd.DataFrame(discovered)
     df.to_json(out_dir / "discovered_raw.json", orient="records", force_ascii=False, indent=2)
     return discovered
@@ -1393,6 +2256,7 @@ async def discover_kochi_projects(params: InputParams = None) -> list[dict[str, 
 @task
 async def enrich_project_details(discovered: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Visit each project detail page, extract structured data, normalize to schema."""
+    _activate_settings_from_records(discovered)
     session, use_curl = _build_http_client()
     enriched: list[dict[str, Any]] = []
 
@@ -1402,13 +2266,30 @@ async def enrich_project_details(discovered: list[dict[str, Any]]) -> list[dict[
         source = project.get("source", "unknown")
         logger.info("Enriching project %d/%d: %s (%s)", i + 1, len(discovered), project_name or "(unnamed)", source)
 
+        detail_fetched = False
         if detail_url:
             try:
                 html_text = _fetch(session, detail_url, retries=1, use_curl_cffi=use_curl)
+                detail_fetched = True
                 detail = parse_project_detail_page(html_text, source)
                 for key, value in detail.items():
                     if value is not None and (key not in project or project.get(key) is None or project.get(key) == "" or project.get(key) == []):
                         project[key] = value
+
+                # Fix: if builder_name looks like project_name, clear it for AI to correct
+                proj_name = project.get("project_name", "")
+                existing_builder = project.get("builder_name", "")
+                if proj_name and existing_builder:
+                    proj_words = set(proj_name.lower().split())
+                    builder_words = set(existing_builder.lower().split())
+                    if builder_words and builder_words.issubset(proj_words):
+                        project["builder_name"] = None
+                    elif proj_words and proj_words.issubset(builder_words):
+                        project["builder_name"] = None
+                    elif len(proj_words) > 0 and len(builder_words) > 0:
+                        overlap = len(proj_words & builder_words) / max(len(proj_words), len(builder_words))
+                        if overlap > 0.8:
+                            project["builder_name"] = None
 
                 needs_ai = not project.get("builder_name") or not project.get("configurations") or not project.get("property_types")
                 if needs_ai or not project.get("project_description"):
@@ -1424,6 +2305,11 @@ async def enrich_project_details(discovered: list[dict[str, Any]]) -> list[dict[
             except Exception as exc:
                 logger.warning("Detail fetch failed for %s: %s", detail_url, exc)
 
+        # Skip projects where detail page failed and no useful data exists
+        if not detail_fetched and not project.get("project_name") and not project.get("builder_name"):
+            logger.info("Skipping %s: no data extracted", detail_url or "unknown")
+            continue
+
         normalized = normalize_project_record(project)
         if normalized:
             enriched.append(normalized)
@@ -1431,11 +2317,58 @@ async def enrich_project_details(discovered: list[dict[str, Any]]) -> list[dict[
         await asyncio.sleep(random.uniform(SETTINGS.min_delay, SETTINGS.max_delay))
 
     logger.info("Enriched %d projects out of %d discovered", len(enriched), len(discovered))
-    out_dir = Path("saved_data/kochi_launches")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _saved_data_dir()
     df = pd.DataFrame(enriched)
     df.to_json(out_dir / "enriched_projects.json", orient="records", force_ascii=False, indent=2)
     return enriched
+
+
+@task
+async def backfill_possession_dates(enriched: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Targeted pass: only records missing possession_date get a focused extraction."""
+    if not enriched:
+        return enriched
+
+    _activate_settings_from_records(enriched)
+    session, use_curl = _build_http_client()
+    updated: list[dict[str, Any]] = []
+    backfilled = 0
+
+    for rec in enriched:
+        if rec.get("possession_date"):
+            updated.append(rec)
+            continue
+
+        url = rec.get("project_url") or rec.get("source_url")
+        if not url:
+            updated.append(rec)
+            continue
+
+        try:
+            html_text = _fetch(session, url, retries=1, use_curl_cffi=use_curl)
+            # Try regex/card extractor first
+            pdate, psrc, pconf = _extract_possession_from_text(_html_to_text(html_text))
+            if pdate:
+                rec["possession_date"] = pdate
+                rec["possession_source"] = psrc or "detail_regex"
+                rec["possession_confidence"] = pconf or "medium"
+                backfilled += 1
+            else:
+                # LLM fallback only for this one field
+                ai = ai_extract_possession(_html_to_text(html_text))
+                if ai.get("possession_date"):
+                    rec.update(ai)
+                    backfilled += 1
+        except Exception as exc:
+            logger.debug("Possession backfill fetch failed for %s: %s", url, exc)
+
+        updated.append(rec)
+        await asyncio.sleep(random.uniform(SETTINGS.min_delay, SETTINGS.max_delay))
+
+    logger.info("Backfilled possession_date for %d records", backfilled)
+    out_dir = _saved_data_dir()
+    pd.DataFrame(updated).to_json(out_dir / "enriched_projects_backfilled.json", orient="records", force_ascii=False, indent=2)
+    return updated
 
 
 @task
@@ -1444,13 +2377,54 @@ async def standardize_and_index(enriched: list[dict[str, Any]]) -> int:
         logger.info("No enriched projects to standardize and index")
         return 0
 
+    _activate_settings_from_records(enriched)
+
     deduped = deduplicate_projects(enriched)
     logger.info("After deduplication: %d unique projects (from %d)", len(deduped), len(enriched))
 
-    indexed = index_projects_to_es(deduped)
+    launch_projects, completed_projects = _split_projects_by_status(deduped)
 
-    out_dir = Path("saved_data/kochi_launches")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    es = es_client()
+    indexed_launch = 0
+    indexed_completed = 0
+
+    if launch_projects:
+        indexed_launch = index_projects_to_es(launch_projects, es=es)
+    else:
+        logger.info("No launch projects to index into %s", SETTINGS.es_index)
+
+    if completed_projects:
+        indexed_completed = index_projects_to_es(completed_projects, es=es, index=SETTINGS.completed_es_index)
+    else:
+        logger.info("No completed projects to index into %s", SETTINGS.completed_es_index)
+
+    launch_ids = [p.get("id") for p in launch_projects if p.get("id")]
+    completed_ids = [p.get("id") for p in completed_projects if p.get("id")]
+
+    if completed_ids:
+        removed_from_launch = delete_projects_from_index(es, SETTINGS.es_index, completed_ids)
+        if removed_from_launch:
+            logger.info("Removed %d completed docs from launch index %s", removed_from_launch, SETTINGS.es_index)
+
+    if launch_ids:
+        removed_from_completed = delete_projects_from_index(es, SETTINGS.completed_es_index, launch_ids)
+        if removed_from_completed:
+            logger.info(
+                "Removed %d non-completed docs from completed index %s",
+                removed_from_completed,
+                SETTINGS.completed_es_index,
+            )
+
+    indexed = indexed_launch + indexed_completed
+    logger.info(
+        "Indexed launch=%d into %s, completed=%d into %s",
+        indexed_launch,
+        SETTINGS.es_index,
+        indexed_completed,
+        SETTINGS.completed_es_index,
+    )
+
+    out_dir = _saved_data_dir()
     df = pd.DataFrame(deduped)
     df.to_json(out_dir / "standardized_projects.json", orient="records", force_ascii=False, indent=2)
     return indexed
@@ -1503,18 +2477,31 @@ async def ai_classify_builders() -> int:
     return updated
 
 
-register_pipeline(
-    id="kochi_launches_pipeline",
-    description="Discover, enrich and index pre-launch & new-launch property projects in Kochi, Kerala into Elasticsearch.",
-    tasks=[discover_kochi_projects, enrich_project_details, standardize_and_index],
-    triggers=[
+_TRIGGERS: list[Trigger] = []
+for city_key, section_name in sorted(_city_sections.items()):
+    city_settings = _load_settings_for_city(city_key)
+    _TRIGGERS.append(
         Trigger(
-            id="kochi_launches_daily",
-            name="Kochi Launches Daily",
-            description="Run Kochi property launches pipeline daily at 06:30 IST",
-            params=InputParams(),
-            schedule=CronTrigger(hour="1", minute="0", timezone="Asia/Kolkata"),
+            id=f"property_launches_daily_{city_key}",
+            name=f"Property Launches Daily ({city_settings.city})",
+            description=f"Run property launches pipeline daily for {city_settings.city}, {city_settings.state or 'India'}",
+            params=InputParams(city=city_key),
+            schedule=CronTrigger(
+                hour=city_settings.schedule_hour,
+                minute=city_settings.schedule_minute,
+                timezone=city_settings.schedule_timezone,
+            ),
         )
-    ],
+    )
+
+
+register_pipeline(
+    id="property_launches_pipeline",
+    description="Discover, enrich and index pre-launch & new-launch property projects for configurable cities in India into Elasticsearch.",
+    tasks=[discover_projects, enrich_project_details, backfill_possession_dates, standardize_and_index],
+    triggers=_TRIGGERS,
     params=InputParams,
 )
+
+
+_refresh_settings_after_patch()

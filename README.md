@@ -35,6 +35,9 @@ The dashboard is available at **http://localhost:8080**.
 | **Carswitch Cars** | `src/crswth_crs.py` | Scheduled | Scrapes car listings from Carswitch. Parses streaming HTML payloads, enriches with detail-page data, indexes into Elasticsearch, and exports to R2. |
 | **Allsopp Property** | `src/allsopp_crs.py` | Scheduled | Scrapes residential sales listings from allsoppandallsopp.com (Dubai). Stores in Elasticsearch and exports to R2. |
 | **99acres Property** | `src/acres99_crs.py` | Scheduled | Scrapes property listings from 99acres (India). Stores in Elasticsearch and exports to R2. |
+| **Property Launches (Multi-city)** | `src/property_launches_pipeline.py` | Daily per city | Discovers, enriches, and indexes pre-launch/new-launch projects by city using `[property_launches.<city>]` config sections. Uses shared indices (`property_launches`, `property_completed_projects`) and routes `ready-to-move` inventory into the shared completed index with city partition fields. |
+| **Property Projects (Kerala/UAE/KSA)** | `src/property_projects_pipeline.py` | Daily per city | Discovers, enriches, and indexes apartments, villas, and commercial projects across configured Kerala/UAE/KSA cities using `[property_projects.<city>]` config sections into the shared `property_projects` Elasticsearch index. |
+| **Market Events (UAE/KSA/Kerala)** | `src/market_events_pipeline.py` | Daily per region | Tracks major global/country/state/city/locality events that can impact property markets (wars, infrastructure, investment, mega events like FIFA/Expo, policy shifts, disasters). Ingests from free sources (Google News RSS, Guardian API, UN News, Fed/ECB press feeds, Al Jazeera, Arab News, Saudi Press Agency, World Bank, GDACS/USGS/EONET, GDELT backfill). Applies source-weighted quality scoring and minimum credibility/quality thresholds before indexing into `market_events`. |
 
 ## Architecture
 
@@ -81,6 +84,10 @@ All credentials are managed through `src/config/config.ini` (INI format). See `s
 - **`[cloudflare]`** - Cloudflare R2 credentials and bucket config
 - **`[Sendgrid]`** - SMTP credentials for alert emails
 - **`[core]`** - Shared settings (base URLs, etc.)
+- **`[property_launches.<city>]`** - City-specific property launch scraping settings (queries, sources, delays, schedule) writing into shared launch/completed indices with city partitioning
+- **`[property_projects.<city>]`** - City-specific all-project scraping settings (Kerala/UAE/KSA; apartments/villas/commercial) writing into the shared `property_projects` index
+- **`[market_events]`** - Global settings for market-events pipeline (index, source toggles, backfill window, limits)
+- **`[market_events.<region>]`** - Region-specific focus geography and queries (`uae`, `ksa`, `india_kerala`) for world/country/state/city/locality events impacting real estate
 
 ## Project Structure
 
@@ -95,6 +102,9 @@ plombery-scraper/
 │   ├── crswth_crs.py             # Carswitch car listings pipeline
 │   ├── allsopp_crs.py            # Allsopp property listings pipeline
 │   ├── acres99_crs.py            # 99acres property listings pipeline
+│   ├── property_launches_pipeline.py # Multi-city property launches pipeline
+│   ├── property_projects_pipeline.py # Multi-region property projects pipeline
+│   ├── market_events_pipeline.py # Multi-region market events pipeline
 │   ├── config/
 │   │   ├── __init__.py           # Config reader (configparser)
 │   │   ├── config.ini            # Local config (gitignored)

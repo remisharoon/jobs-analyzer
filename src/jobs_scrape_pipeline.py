@@ -1,42 +1,33 @@
 from __future__ import annotations
-from asyncio import sleep
+
 from datetime import datetime
-import enum
-from typing import Optional
-from dateutil import tz
-from requests_html import HTMLSession
-from apscheduler.triggers.interval import IntervalTrigger
-
-from pydantic import BaseModel, Field
-
-from plombery import register_pipeline, task, Trigger, get_logger
-import random
-import mmh3
-import requests
-import time
+import ast
 import json
-from jobspy import scrape_jobs
-import pandas as pd
-from sqlalchemy import create_engine, MetaData, Table, select
-import urllib.request
-from config import read_config
-import unicodedata
-import re
-import random
-from elasticsearch import Elasticsearch, helpers
-from uuid import uuid4
-from pathlib import Path
-import boto3
 import logging
+import re
+import time
+import unicodedata
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import boto3
+import mmh3
+import pandas as pd
+from apscheduler.triggers.interval import IntervalTrigger
+from elasticsearch import Elasticsearch, helpers
+from jobspy import scrape_jobs
+from pydantic import BaseModel
+from requests_html import HTMLSession
+from sqlalchemy import create_engine
+
+from config import read_config
+from plombery import Trigger, register_pipeline, task
+from utils.llm_client import call_llm
 
 
 # llm_json_utils.py
 # Robust JSON extraction/parsing for messy LLM outputs.
-
-
-from typing import Any, Dict, List, Optional
-import json
-import re
 
 # Optional dependencies: install any subset of these.
 #   pip install json-repair dirtyjson python-rapidjson
@@ -233,33 +224,10 @@ country_indeed_mapping = {
 }
 
 
-# Set up the API request
-# url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
-GEMINI_V2_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-GEMINI_V1_5_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-
-MAX_RETRIES_V2 = 3          # how many 429s before trying 1 .5
-MAX_RETRIES_V1_5 = 3        # optional: cap total tries
-
 config = read_config()
-gemini_config = config['GeminiPro']
-openrouter_config = config['openrouter']
 neondb_config = config['PostgresDB']
 es_config = config['elasticsearch']
 cloudflare_config = config['cloudflare']
-
-GEMINI_API_KEY = random.choice([gemini_config['API_KEY_RH'], gemini_config['API_KEY_RHA']])
-
-# OR_API_KEY = openrouter_config['API_KEY']
-
-HEADERS = {
-    'Content-Type': 'application/json',
-    'X-goog-api-key': GEMINI_API_KEY
-}
-
-
-PARAMS = {'key': GEMINI_API_KEY}  # Use the actual API key provided
-# headers = {'Content-Type': 'application/json'}
 
 connection_string = neondb_config['connection_string']
 
@@ -570,35 +538,6 @@ async def export_jobs_json_to_r2():
     )
 
 # ----------------------------------------------------------------------------
-def call_gemini(payload: dict):
-    """
-    Try 2.0-flash first.  On HTTP 429 switch to 1.5-pro.
-    Returns the parsed JSON response (raises after final failure).
-    """
-
-    # ---- first: hit 2.0-flash ---------------------------------------------
-    for attempt in range(1, MAX_RETRIES_V2 + 1):
-        resp = requests.post(GEMINI_V2_URL, json=payload,
-                             headers=HEADERS, params=PARAMS, timeout=30)
-        if resp.status_code == 200:
-            return resp        # success
-        if resp.status_code != 429:
-            resp.raise_for_status()   # hard failure – bubble up
-        time.sleep(2 ** attempt)      # 429 → back-off then retry
-
-    # ---- still 429: fall back to 1.5-pro -----------------------------------
-    for attempt in range(1, MAX_RETRIES_V1_5 + 1):
-        resp = requests.post(GEMINI_V1_5_URL, json=payload,
-                             headers=HEADERS, params=PARAMS, timeout=30)
-        if resp.status_code == 200:
-            return resp
-        if resp.status_code != 429:
-            resp.raise_for_status()
-        time.sleep(2 ** attempt)
-
-    # ---- nothing worked ----------------------------------------------------
-    raise RuntimeError("Gemini API: exhausted retries on both 2.0-flash and 1.5-pro")
-
 def save_to_db(table_name, df: pd.DataFrame):
     if df.empty:
         logger.info("No rows to persist to table %s", table_name)
@@ -620,8 +559,6 @@ def query_to_df(query) -> pd.DataFrame:
 
 def hash_url(url):
     return mmh3.hash(url, signed=False)
-
-import json, re, ast
 
 def fix_unescaped_newlines(txt: str) -> str:
     """
@@ -806,14 +743,6 @@ def infer_from_rawdata(batch_size=5) -> pd.DataFrame:
     jobs = query_to_df("SELECT distinct * FROM ja_jobs_raw_new where job_hash not in (SELECT job_hash FROM ja_jobs_raw) order by date_posted desc limit {0}".format(batch_size))
     print("jobs count = ", str(len(jobs)))
 
-    # Define key fields to check
-    key_fields = [
-        'country_inferred',
-        'job_title_inferred',
-        'company_name_inferred',
-        'desired_tech_skills_inferred'
-    ]
-
     # Iterate over each row in the DataFrame
     for index, row in jobs.iterrows():
         # Extract relevant fields
@@ -828,96 +757,50 @@ def infer_from_rawdata(batch_size=5) -> pd.DataFrame:
 
         input_text = re.sub('\s+', ' ', input_text)
 
-        # Set up the API request
-        # Call Gemini API
-        start_time = time.time()  # Start timing
+        start_time = time.time()
 
-        payload = {
-            # <--- system-level rules go here
-            "system_instruction": {
-                "parts": [
-                    {
-                        "text": (
-                            "You are an extraction engine. "
-                            "Return ONE compact JSON object with exactly the keys I list. "
-                            "Strings must NOT contain literal line-breaks – escape them as \\n. "
-                            "No markdown, no code fences, no explanatory text. "
-                            "If a value is missing use null."
-                        )
-                    }
-                ]
-            },
-            "contents": [{"parts": [{"text": f"""  Extract and return these fields in a dictionary:
-                    1. country
-                    2.state
-                    3.city
-                    4.desired tech skills (as a list)
-                    5.desired soft skills (as a list)
-                    6.desired domain skills (as a list)
-                    7. domains (as a list)
-                    8.company sector
-                    9.position seniority level
-                    10. job type
-                    11. job title
-                    12. job description
-                    13. job requirements
-                    14. job responsibilities
-                    15. job benefits
-                    16. salary (if mentioned)
-                    18. company name (if mentioned)
-                    19. company description (if mentioned)
-                    20. company website (if mentioned)
-                    21. company size (if mentioned)
-                    22. company industry (if mentioned)
-                    23. company headquarters (if mentioned)
-                    24. company employees (if mentioned)
-                    25. company revenue (if mentioned)
-                    , from this text  - {input_text} """}]}],
-            # optional but very useful: tell Gemini you **only want JSON**
-            "generation_config": {
-                "response_mime_type": "application/json",
-                "temperature": 0.0  # deterministic
-            }
-        }
+        system_prompt = (
+            "You are an extraction engine. "
+            "Return ONE compact JSON object with exactly the keys I list. "
+            "Strings must NOT contain literal line-breaks – escape them as \\n. "
+            "No markdown, no code fences, no explanatory text. "
+            "If a value is missing use null."
+        )
+        user_prompt = f"""  Extract and return these fields in a dictionary:
+                1. country
+                2.state
+                3.city
+                4.desired tech skills (as a list)
+                5.desired soft skills (as a list)
+                6.desired domain skills (as a list)
+                7. domains (as a list)
+                8.company sector
+                9.position seniority level
+                10. job type
+                11. job title
+                12. job description
+                13. job requirements
+                14. job responsibilities
+                15. job benefits
+                16. salary (if mentioned)
+                18. company name (if mentioned)
+                19. company description (if mentioned)
+                20. company website (if mentioned)
+                21. company size (if mentioned)
+                22. company industry (if mentioned)
+                23. company headquarters (if mentioned)
+                24. company employees (if mentioned)
+                25. company revenue (if mentioned)
+                , from this text  - {input_text} """
 
-        try_count = 1
-        retry_delay = 5  # sleep for 5 seconds before retrying
-        while try_count < 7:
-            result_json_str = ""
-            try:
-                # response = requests.post(url, json=payload, headers=headers, params=params)
-                response = call_gemini(payload)
-                if response.status_code == 200:
-                    result = response.json()
-                    # print("result - ", result)
-                    result_json_str = result['candidates'][0]['content']['parts'][0]['text']
+        try:
+            result_json_str = call_llm(system_prompt=system_prompt, user_prompt=user_prompt, json_mode=True)
+            result_dict = parse_llm_json(result_json_str)
 
-                    # print("result_dict - ", result_json_str)
-                    # 1️⃣  Remove BOM if it’s there (cheap and safe)
-                    # result_json_str = result_json_str.lstrip('\ufeff')
-                    #
-                    # result_json_str = result_json_str.lstrip("```").rstrip("```")
-                    #
-                    # # 2️⃣  Lop off anything that appears before the first '{' or '['
-                    # #     (covers unknown-length XSSI prefixes).
-                    # result_json_str = re.sub(r'^[^\[{]*', '', result_json_str, count=1)
-                    #
-                    # result_json_str = remove_control_characters(result_json_str)
-                    #
-                    # # replace every ": None" (with optional spaces) by ": null"
-                    # result_json_str = re.sub(r':\s*None\b', ': null', result_json_str)
-                    #
-                    # # print("result_json_str 2 - ", result_json_str)
-                    # # result_dict = json.loads(result_json_str)
-                    # result_dict = parse_gemini(result_json_str)
+            end_time = time.time()
+            print(f"get time: {end_time - start_time} seconds")
 
-                    result_dict = parse_llm_json(result_json_str)
-
-                    # print("result_dict - ", result_dict)
-                    end_time = time.time()  # End timing
-                    print(f"get time: {end_time - start_time} seconds")
-
-                    fields_list = [
+            fields_list = [
                         'country',
                         'state',
                         'city',
@@ -943,39 +826,25 @@ def infer_from_rawdata(batch_size=5) -> pd.DataFrame:
                         'company employees',
                         'company revenue'
                     ]
-                    field_suffix_list = []
-                    for field in fields_list:
-                        field_suffix = field.replace(" ", "_") + "_inferred"
-                        if field not in result_dict:
-                            jobs.at[index, field_suffix] = ""
-                        else:
-                            value = result_dict[field]
-                            # Check if the value is a list
-                            if isinstance(value, list):
-                                # Convert the list to a string representation
-                                try:
-                                    value_str = ", ".join(str(item) for item in value)
-                                except Exception as e:
-                                    print(f"Error converting list {value} to string: {e}")
-                                    value_str = "Unknown"
-                                jobs.at[index, field_suffix] = value_str
-                            else:
-                                jobs.at[index, field_suffix] = str(value)
-                        field_suffix_list.append(field_suffix)
-                    # print(jobs[field_suffix_list])
-                    break
+            for field in fields_list:
+                field_suffix = field.replace(" ", "_") + "_inferred"
+                if field not in result_dict:
+                    jobs.at[index, field_suffix] = ""
                 else:
-                    print(f"API request failed with status code {response.status_code}. Retrying...")
-                    try_count += 1
-            except Exception as e:
-                print(f"API request failed with exception {e}. Retrying...")
-                print("PARSE ERROR:", e)
-                print("RAW RESPONSE --------")
-                print(result_json_str)
-                print("----------------------")
-                time.sleep(retry_delay)
-                try_count += 1
-                retry_delay *= 2
+                    value = result_dict[field]
+                    if isinstance(value, list):
+                        try:
+                            value_str = ", ".join(str(item) for item in value)
+                        except Exception as e:
+                            print(f"Error converting list {value} to string: {e}")
+                            value_str = "Unknown"
+                        jobs.at[index, field_suffix] = value_str
+                    else:
+                        jobs.at[index, field_suffix] = str(value)
+        except Exception as e:
+            print(f"API request failed with exception {e}. Retrying...")
+            print("PARSE ERROR:", e)
+            time.sleep(5)
 
     # Filter out records where any key field is not inferred
     # for field in key_fields:

@@ -1,8 +1,9 @@
-"""99acres property scraper and pipeline.
+"""Housing.com scraper and pipeline.
 
-Scrapes 99acres listing pages across configured categories and cities,
-enriches records with detail-page payloads, indexes documents to
-Elasticsearch, and exports snapshots to Cloudflare R2.
+Scrapes Housing.com listing pages for buy, rent, commercial, PG/co-living,
+and plots inventory across configured cities. It enriches each listing with
+detail-page data, indexes records into Elasticsearch, and exports a JSON
+snapshot to Cloudflare R2.
 """
 
 from __future__ import annotations
@@ -47,22 +48,9 @@ from config import read_config
 logger = logging.getLogger(__name__)
 
 
-CONFIG_SECTION = "acres99"
-SOURCE_NAME = "99acres.com"
-ACRES_BASE_URL = "https://www.99acres.com"
-
-LISTING_HOST_ALLOWLIST = {"99acres.com", "www.99acres.com", "m.99acres.com"}
-ASSET_HOST_BLOCK_PREFIXES = (
-    "newprojects.",
-    "imagecdn.",
-    "projectcdn.",
-    "mediacdn.",
-    "static.",
-    "media.",
-)
-
-DETAIL_URL_TOKEN_RE = re.compile(r"-(?:spid|npxid|rpid|ppid)-[a-z0-9]+", re.I)
-ASSET_FILE_SUFFIX_RE = re.compile(r"\.(?:jpg|jpeg|png|gif|webp|svg|mp4|webm|pdf)(?:$|[?#])", re.I)
+CONFIG_SECTION = "housing"
+SOURCE_NAME = "housing.com"
+HOUSING_BASE_URL = "https://housing.com"
 
 DEFAULT_CITY_SLUGS = (
     "kochi",
@@ -91,13 +79,19 @@ DEFAULT_CITY_LABELS = {
 }
 
 DEFAULT_URL_TEMPLATES = {
-    "buy": "https://www.99acres.com/property-in-{city}-ffid-page-{page}",
-    "rent": "https://www.99acres.com/property-for-rent-in-{city}-ffid-page-{page}",
+    "buy": "https://housing.com/in/buy/{city}?page={page}",
+    "rent": "https://housing.com/in/rent/{city}?page={page}",
+    "commercial": "https://housing.com/in/commercial/{city}?page={page}",
+    "pg": "https://housing.com/in/pg/{city}?page={page}",
+    "plots": "https://housing.com/in/plots/{city}?page={page}",
 }
 
 DEFAULT_INDEXES = {
-    "buy": "acres99_properties",
-    "rent": "acres99_rent_properties",
+    "buy": "housing_properties",
+    "rent": "housing_rent_properties",
+    "commercial": "housing_commercial_properties",
+    "pg": "housing_pg_properties",
+    "plots": "housing_plots_properties",
 }
 
 REQUEST_HEADERS = {
@@ -120,14 +114,13 @@ MODERN_USER_AGENTS = (
 IMPERSONATE_IDS = ("chrome110", "chrome120", "chrome124", "chrome131")
 
 HARD_BLOCK_MARKERS = (
-    "data-label=\"captcha\"",
-    "datalabel=\"captcha\"",
-    "verifycaptcha",
     "verify you are a human",
     "access denied",
     "unusual traffic",
+    "are you a robot",
     "security challenge",
     "temporarily blocked",
+    "cloudflare ray id",
 )
 
 SOFT_BLOCK_MARKERS = (
@@ -136,11 +129,13 @@ SOFT_BLOCK_MARKERS = (
 )
 
 SOFT_BLOCK_ALLOW_MARKERS = (
-    "__initialdata__",
     "__next_data__",
     "application/ld+json",
-    "99acres",
-    "property-in-",
+    "housing",
+    "buy",
+    "rent",
+    "commercial",
+    "projects",
 )
 
 RETRYABLE_HTTP_STATUS = {403, 408, 409, 425, 429, 500, 502, 503, 504}
@@ -162,70 +157,76 @@ PRICE_MULTIPLIERS = {
 
 ID_KEYS = (
     "id",
-    "propId",
+    "projectId",
+    "project_id",
     "propertyId",
     "property_id",
     "listingId",
-    "pid",
-    "PropID",
-    "PROP_ID",
+    "prjid",
+    "uuid",
 )
 
 URL_KEYS = (
     "url",
+    "projectUrl",
+    "projectURL",
     "propertyUrl",
     "detailUrl",
     "detail_url",
-    "permalink",
-    "landingUrl",
-    "pdUrl",
+    "href",
     "seoUrl",
-    "absolute_url",
-    "propertyLink",
+    "permalink",
+    "link",
 )
 
 TITLE_KEYS = (
-    "title",
-    "propertyTitle",
-    "heading",
-    "name",
     "projectName",
-    "societyName",
+    "project_name",
+    "projectTitle",
+    "propertyName",
+    "title",
+    "name",
+    "heading",
     "displayName",
+    "societyName",
+)
+
+BUILDER_KEYS = (
+    "builderName",
+    "builder_name",
+    "builder",
+    "developerName",
+    "developer_name",
+    "developer",
 )
 
 PRICE_KEYS = (
     "price",
-    "priceValue",
+    "priceRange",
+    "price_range",
+    "startingPrice",
     "minPrice",
     "maxPrice",
-    "listingPrice",
-    "cost",
     "amount",
     "priceText",
-    "priceLabel",
-    "priceStr",
-    "priceRange",
 )
 
 PRICE_PER_SQFT_KEYS = (
-    "pricePerUnitArea",
     "pricePerSqft",
-    "pricePerSqFt",
     "price_per_sqft",
+    "pricePerUnitArea",
     "ratePerSqft",
 )
 
 AREA_KEYS = (
     "area",
+    "areaSqft",
+    "area_sqft",
     "builtUpArea",
     "superBuiltupArea",
     "carpetArea",
     "plotArea",
     "size",
-    "areaSqft",
-    "area_sqft",
-    "coveredArea",
 )
 
 BHK_KEYS = (
@@ -233,8 +234,6 @@ BHK_KEYS = (
     "bedrooms",
     "bedroom",
     "bedroomCount",
-    "noOfBedrooms",
-    "bedroom_num",
     "numBedrooms",
 )
 
@@ -242,30 +241,29 @@ BATH_KEYS = (
     "bathrooms",
     "bathroom",
     "bathroomCount",
-    "noOfBathrooms",
     "numBathrooms",
 )
 
 TYPE_KEYS = (
     "propertyType",
-    "propType",
     "property_type",
+    "propertyTypes",
+    "category",
     "type",
-    "subType",
 )
 
 STATUS_KEYS = (
+    "listingStatus",
     "status",
     "constructionStatus",
-    "possessionStatus",
-    "listingStatus",
+    "launchStatus",
 )
 
 LOCALITY_KEYS = (
     "locality",
     "localityName",
+    "area",
     "areaName",
-    "location",
     "address",
 )
 
@@ -277,11 +275,11 @@ CITY_KEYS = (
 
 LAT_KEYS = ("lat", "latitude")
 LNG_KEYS = ("lng", "lon", "longitude")
-
 RERA_KEYS = ("rera", "reraId", "reraNumber", "reraNo")
 POSSESSION_KEYS = ("possessionDate", "possession", "handoverDate", "completionDate")
+CONFIG_KEYS = ("configuration", "configurations", "bhk")
 AMENITY_KEYS = ("amenities", "features", "projectAmenities")
-IMAGE_KEYS = ("images", "image", "gallery", "photos", "imageList")
+IMAGE_KEYS = ("images", "image", "gallery", "photos")
 
 MANDATORY_FIELDS = ("id", "title", "detail_url", "city", "source")
 
@@ -327,7 +325,7 @@ QUARTER_MAP = {"q1": "03", "q2": "06", "q3": "09", "q4": "12"}
 
 
 @dataclass(slots=True)
-class Acres99BaseSettings:
+class HousingBaseSettings:
     enabled: bool
     min_delay_seconds: float
     max_delay_seconds: float
@@ -341,7 +339,7 @@ class Acres99BaseSettings:
 
 
 @dataclass(slots=True)
-class Acres99JobSettings:
+class HousingJobSettings:
     name: str
     category: str
     city_slug: str
@@ -355,7 +353,6 @@ class Acres99JobSettings:
 class HttpClient:
     session: Any
     use_curl_cffi: bool
-    api_token: str | None = None
 
 
 ES_INDEX_MAPPING = {
@@ -377,11 +374,12 @@ ES_INDEX_MAPPING = {
             "id": {"type": "keyword"},
             "detail_url": {"type": "keyword"},
             "title": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
+            "builder_name": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
             "city": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
             "locality": {"type": "text", "fields": {"kw": {"type": "keyword", "ignore_above": 256}}},
             "listing_category": {"type": "keyword"},
-            "source_page": {"type": "integer"},
             "source": {"type": "keyword"},
+            "source_page": {"type": "integer"},
         },
     },
 }
@@ -464,11 +462,9 @@ def _parse_csv(raw: str) -> list[str]:
     return values
 
 
-def _build_listing_page_url(job: Acres99JobSettings, page: int) -> str:
+def _build_listing_page_url(job: HousingJobSettings, page: int) -> str:
     url = job.listing_url_template.strip()
     url = url.replace("{city}", job.city_slug)
-    url = url.replace("{city_slug}", job.city_slug)
-    url = url.replace("{city_label}", job.city_label)
     if "{page}" in url:
         return url.replace("{page}", str(page))
     if page <= 1:
@@ -477,13 +473,16 @@ def _build_listing_page_url(job: Acres99JobSettings, page: int) -> str:
     return f"{url}{separator}page={page}"
 
 
-def _build_job_settings(section: Any, city_slugs: list[str], city_labels: dict[str, str], default_pages: int) -> list[Acres99JobSettings]:
+def _build_job_settings(section: Any, city_slugs: list[str], city_labels: dict[str, str], default_pages: int) -> list[HousingJobSettings]:
     category_specs = (
-        ("buy", "listing_url", "pages", "es_index"),
+        ("buy", "buy_listing_url", "pages", "es_index"),
         ("rent", "rent_listing_url", "rent_pages", "rent_es_index"),
+        ("commercial", "commercial_listing_url", "commercial_pages", "commercial_es_index"),
+        ("pg", "pg_listing_url", "pg_pages", "pg_es_index"),
+        ("plots", "plots_listing_url", "plots_pages", "plots_es_index"),
     )
 
-    jobs: list[Acres99JobSettings] = []
+    jobs: list[HousingJobSettings] = []
     for category, url_key, pages_key, index_key in category_specs:
         fallback_url = DEFAULT_URL_TEMPLATES[category]
         if category == "buy":
@@ -499,7 +498,7 @@ def _build_job_settings(section: Any, city_slugs: list[str], city_labels: dict[s
         for slug in city_slugs:
             label = city_labels.get(slug) or _city_label(slug)
             jobs.append(
-                Acres99JobSettings(
+                HousingJobSettings(
                     name=f"{category}_{slug.replace('-', '_')}",
                     category=category,
                     city_slug=slug,
@@ -514,40 +513,40 @@ def _build_job_settings(section: Any, city_slugs: list[str], city_labels: dict[s
 
 config = read_config()
 
-has_acres_section = config.has_section(CONFIG_SECTION)
-acres_section = config[CONFIG_SECTION] if has_acres_section else {}
+has_housing_section = config.has_section(CONFIG_SECTION)
+housing_section = config[CONFIG_SECTION] if has_housing_section else {}
 
-enabled_default = has_acres_section
-acres_enabled = _parse_bool(_section_get(acres_section, "enabled", str(enabled_default).lower()), default=enabled_default)
+enabled_default = has_housing_section
+housing_enabled = _parse_bool(_section_get(housing_section, "enabled", str(enabled_default).lower()), default=enabled_default)
 
-cities = _parse_csv(_section_get(acres_section, "cities", ",".join(DEFAULT_CITY_SLUGS)))
+cities = _parse_csv(_section_get(housing_section, "cities", ",".join(DEFAULT_CITY_SLUGS)))
 if not cities:
     cities = list(DEFAULT_CITY_SLUGS)
 
-city_labels_override = _parse_city_labels(_section_get(acres_section, "city_labels", ""))
+city_labels_override = _parse_city_labels(_section_get(housing_section, "city_labels", ""))
 CITY_LABELS = {slug: _city_label(slug) for slug in cities}
 CITY_LABELS.update(city_labels_override)
 
-base_data_dir = Path((_section_get(acres_section, "data_dir", "saved_data/99acres") or "saved_data/99acres").strip())
+base_data_dir = Path((_section_get(housing_section, "data_dir", "saved_data/housing") or "saved_data/housing").strip())
 
-BASE_SETTINGS = Acres99BaseSettings(
-    enabled=acres_enabled,
-    min_delay_seconds=_parse_float(_section_get(acres_section, "min_delay_seconds", "2.5"), 2.5),
-    max_delay_seconds=_parse_float(_section_get(acres_section, "max_delay_seconds", "6.5"), 6.5),
-    detail_retry_count=max(1, _parse_int(_section_get(acres_section, "detail_retry_count", "4"), 4)),
-    request_timeout=max(5, _parse_int(_section_get(acres_section, "request_timeout_seconds", "30"), 30)),
-    stop_on_existing=_parse_bool(_section_get(acres_section, "stop_on_existing", "true"), default=True),
+BASE_SETTINGS = HousingBaseSettings(
+    enabled=housing_enabled,
+    min_delay_seconds=_parse_float(_section_get(housing_section, "min_delay_seconds", "2.0"), 2.0),
+    max_delay_seconds=_parse_float(_section_get(housing_section, "max_delay_seconds", "5.0"), 5.0),
+    detail_retry_count=max(1, _parse_int(_section_get(housing_section, "detail_retry_count", "3"), 3)),
+    request_timeout=max(5, _parse_int(_section_get(housing_section, "request_timeout_seconds", "30"), 30)),
+    stop_on_existing=_parse_bool(_section_get(housing_section, "stop_on_existing", "true"), default=True),
     data_dir=base_data_dir,
-    schedule_hour=(_section_get(acres_section, "schedule_hour", "5") or "5").strip(),
-    schedule_minute=(_section_get(acres_section, "schedule_minute", "30") or "30").strip(),
-    schedule_timezone=(_section_get(acres_section, "schedule_timezone", "Asia/Kolkata") or "Asia/Kolkata").strip(),
+    schedule_hour=(_section_get(housing_section, "schedule_hour", "4") or "4").strip(),
+    schedule_minute=(_section_get(housing_section, "schedule_minute", "15") or "15").strip(),
+    schedule_timezone=(_section_get(housing_section, "schedule_timezone", "Asia/Kolkata") or "Asia/Kolkata").strip(),
 )
 
-DEFAULT_PAGES = max(1, _parse_int(_section_get(acres_section, "pages", "2"), 2))
-JOB_SETTINGS = _build_job_settings(acres_section, cities, CITY_LABELS, DEFAULT_PAGES)
+DEFAULT_PAGES = max(1, _parse_int(_section_get(housing_section, "pages", "2"), 2))
+JOB_SETTINGS = _build_job_settings(housing_section, cities, CITY_LABELS, DEFAULT_PAGES)
 
 if not JOB_SETTINGS:
-    logger.warning("No 99acres jobs configured. Scraper task will no-op until URLs are configured.")
+    logger.warning("No Housing.com jobs configured. Scraper task will no-op until URLs are configured.")
 
 
 _es_config = config["elasticsearch"] if config.has_section("elasticsearch") else {}
@@ -592,13 +591,10 @@ def _retry_url(url: str, attempt: int) -> str:
 def _session_get(client: HttpClient, url: str, *, timeout: int, workaround_mode: bool = False):
     headers = dict(REQUEST_HEADERS)
     headers["User-Agent"] = random.choice(MODERN_USER_AGENTS)
-    headers["Referer"] = ACRES_BASE_URL + "/"
+    headers["Referer"] = HOUSING_BASE_URL + "/"
     if workaround_mode:
         headers["Accept"] = "text/html,application/json;q=0.9,*/*;q=0.8"
         headers["Accept-Language"] = random.choice(("en-US,en;q=0.9", "en-IN,en;q=0.9"))
-        headers["DNT"] = "1"
-    if client.api_token:
-        headers["x-api-token"] = client.api_token
 
     if client.use_curl_cffi:
         return client.session.get(
@@ -621,20 +617,13 @@ def _looks_blocked(text: str) -> bool:
     return False
 
 
-def _extract_api_token(html_text: str) -> str | None:
-    match = re.search(r'id=["\']__apiToken["\']\s+value=["\']([^"\']+)["\']', html_text, re.I)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
 def _fetch(
     client: HttpClient,
     url: str,
     *,
     retries: int = 1,
     timeout: int | None = None,
-    base_settings: Acres99BaseSettings | None = None,
+    base_settings: HousingBaseSettings | None = None,
 ) -> str:
     settings = base_settings or BASE_SETTINGS
     tout = timeout or settings.request_timeout
@@ -650,9 +639,6 @@ def _fetch(
                 raise RuntimeError(f"Retryable status code {status_code}")
             response.raise_for_status()
             text = response.text or ""
-            token = _extract_api_token(text)
-            if token:
-                client.api_token = token
             if _looks_blocked(text):
                 raise RuntimeError("Received blocked/captcha response")
             return text
@@ -684,54 +670,6 @@ def _loads_json_best_effort(raw: str) -> Any:
             return json_repair.loads(text)
         except Exception:
             pass
-    return None
-
-
-def _extract_balanced_json(payload: str) -> str | None:
-    depth = 0
-    in_str = False
-    escaped = False
-    start_idx: int | None = None
-    for idx, ch in enumerate(payload):
-        if start_idx is None:
-            if ch != "{":
-                continue
-            start_idx = idx
-            depth = 1
-            continue
-        if escaped:
-            escaped = False
-            continue
-        if ch == "\\":
-            escaped = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0 and start_idx is not None:
-                return payload[start_idx : idx + 1]
-    return None
-
-
-def _load_initial_data(html_text: str) -> dict[str, Any] | None:
-    assign_match = re.search(r"window\.__initialData__\s*=", html_text, re.I)
-    if not assign_match:
-        return None
-    start = html_text.find("{", assign_match.end())
-    if start == -1:
-        return None
-    candidate = _extract_balanced_json(html_text[start:])
-    if not candidate:
-        return None
-    payload = _loads_json_best_effort(candidate)
-    if isinstance(payload, dict):
-        return payload
     return None
 
 
@@ -877,9 +815,9 @@ def _parse_price(value: Any, default_currency: str | None = "INR") -> tuple[int 
         return None, None, _detect_currency(lowered) or default_currency
 
     currency = _detect_currency(text) or default_currency
-    cleaned = re.sub(r"(inr|rs\.?|aed|sar|usd|dirhams?|dhs|riyals?)", " ", text, flags=re.I)
-    cleaned = cleaned.replace("$", " ").replace("\u20b9", " ")
 
+    cleaned = re.sub(r"(inr|rs\.?|aed|sar|usd|dirhams?|dhs|riyals?)", " ", text, flags=re.I)
+    cleaned = cleaned.replace("$", " ")
     matches = re.findall(r"([0-9]+(?:[\.,][0-9]+)?)\s*([a-zA-Z]+)?", cleaned)
     if not matches:
         return None, None, currency
@@ -908,7 +846,8 @@ def _parse_area(value: Any) -> tuple[float | None, float | None]:
         return None, None
     if isinstance(value, (int, float)):
         sqft = float(value)
-        return sqft, round(sqft / 10.7639, 3)
+        sqm = round(sqft / 10.7639, 3)
+        return sqft, sqm
 
     text = _as_text(value)
     if not text:
@@ -940,6 +879,7 @@ def _parse_area(value: Any) -> tuple[float | None, float | None]:
     if "acre" in unit:
         sqft = number * 43_560.0
         return round(sqft, 3), round(sqft / 10.7639, 3)
+
     return None, None
 
 
@@ -951,45 +891,32 @@ def _normalize_url(url: Any) -> str | None:
         return text
     if text.startswith("//"):
         return f"https:{text}"
-    return urljoin(ACRES_BASE_URL, text)
+    return urljoin(HOUSING_BASE_URL, text)
 
 
-def _is_99acres_url(url: str | None) -> bool:
+def _is_housing_url(url: str | None) -> bool:
     if not url:
         return False
     host = (urlparse(url).netloc or "").lower()
-    return host.endswith("99acres.com")
+    return host.endswith("housing.com")
 
 
-def _is_99acres_listing_url(url: str | None) -> bool:
-    if not _is_99acres_url(url):
-        return False
-    parsed = urlparse(url or "")
-    host = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    if not path or path == "/":
-        return False
-
-    if host not in LISTING_HOST_ALLOWLIST:
-        if any(host.startswith(prefix) for prefix in ASSET_HOST_BLOCK_PREFIXES):
-            return False
-
-    if ASSET_FILE_SUFFIX_RE.search(path):
-        return False
-
-    return bool(DETAIL_URL_TOKEN_RE.search(path))
-
-
-def _extract_images(value: Any) -> list[str] | None:
-    if value is None:
+def _name_from_url(url: str | None) -> str | None:
+    if not url:
         return None
-    if isinstance(value, list):
-        images = [str(v).strip() for v in value if str(v).strip()]
-        return images or None
-    text = _as_text(value)
-    if not text:
+    path = urlparse(url).path.strip("/")
+    if not path:
         return None
-    return [text]
+    slug = unquote(path.split("/")[-1])
+    slug = html.unescape(slug)
+    slug = re.sub(r"-prjid-\d+$", "", slug, flags=re.I)
+    slug = re.sub(r"-\d+$", "", slug)
+    slug = slug.replace("+", " ").replace("-", " ").replace("_", " ")
+    slug = re.sub(r"[^\w\s]", " ", slug)
+    slug = re.sub(r"\s+", " ", slug).strip()
+    if len(slug) < 3:
+        return None
+    return slug.title()
 
 
 def _normalize_amenities(value: Any) -> list[str]:
@@ -1003,283 +930,93 @@ def _normalize_amenities(value: Any) -> list[str]:
     return [part.strip().title() for part in re.split(r"[,;/|]", text) if part.strip()]
 
 
-def _stable_id(value: str) -> str:
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()
+def _normalize_property_types(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_parts = [str(v).strip().lower() for v in value if str(v).strip()]
+    else:
+        text = _as_text(value)
+        if not text:
+            return []
+        raw_parts = [part.strip().lower() for part in re.split(r"[,;/|&+]", text) if part.strip()]
 
-
-def _name_from_url(url: str | None) -> str | None:
-    if not url:
-        return None
-    path = urlparse(url).path.strip("/")
-    if not path:
-        return None
-    slug = unquote(path.split("/")[-1])
-    slug = html.unescape(slug)
-    slug = re.sub(r"-(?:spid|npxid|rpid|ppid)-[a-z0-9]+$", "", slug, flags=re.I)
-    slug = re.sub(r"-ffid-\d+", "", slug, flags=re.I)
-    slug = re.sub(r"-\d+$", "", slug)
-    slug = slug.replace("+", " ").replace("-", " ").replace("_", " ")
-    slug = re.sub(r"[^\w\s]", " ", slug)
-    slug = re.sub(r"\s+", " ", slug).strip()
-    if len(slug) < 3:
-        return None
-    return slug.title()
-
-
-def _is_generic_title(value: str | None) -> bool:
-    text = (value or "").strip().lower()
-    if not text:
-        return True
-    if len(text) < 3:
-        return True
-    if text in {"details", "view details", "read more", "project", "property", "buy", "rent"}:
-        return True
-    return any(token in text for token in GENERIC_TITLE_TOKENS)
-
-
-def _looks_like_listing_link(url: str, category: str) -> bool:
-    lowered = url.lower()
-    if not _is_99acres_listing_url(url):
-        return False
-    if re.search(r"[?&]page=", lowered):
-        return False
-    if re.search(r"-page-\d+\b", lowered):
-        return False
-    if any(token in lowered for token in ("/login", "/contact", "/privacy", "/terms", "/news", "/guides")):
-        return False
-
-    _ = category
-    return True
-
-
-def _merge_unique(existing: Any, incoming: Any) -> list[str]:
-    values: list[str] = []
-    for part in (existing or []):
-        text = _as_text(part)
-        if text and text not in values:
-            values.append(text)
-    for part in (incoming or []):
-        text = _as_text(part)
-        if text and text not in values:
-            values.append(text)
-    return values
-
-
-def _score_candidate_dict(item: dict[str, Any]) -> float:
-    if not isinstance(item, dict):
-        return 0.0
-    keyset = set(item.keys())
-    score = 0.0
-    if keyset & set(URL_KEYS):
-        score += 3.0
-    if keyset & set(TITLE_KEYS):
-        score += 2.0
-    if keyset & set(PRICE_KEYS):
-        score += 1.5
-    if keyset & set(ID_KEYS):
-        score += 1.0
-    if keyset & set(AREA_KEYS):
-        score += 1.0
-    if keyset & set(BHK_KEYS):
-        score += 1.0
-    return score
-
-
-def _listing_from_candidate(candidate: dict[str, Any], *, category: str, city_label: str, city_slug: str) -> dict[str, Any] | None:
-    if _score_candidate_dict(candidate) < 3.0:
-        return None
-
-    raw_url = _pick(candidate, URL_KEYS)
-    detail_url = _normalize_url(raw_url)
-    if not detail_url or not _is_99acres_listing_url(detail_url):
-        return None
-
-    title = _as_text(_pick(candidate, TITLE_KEYS)) or _name_from_url(detail_url)
-    if _is_generic_title(title):
-        return None
-
-    offers = candidate.get("offers") if isinstance(candidate.get("offers"), dict) else {}
-
-    price_value = _pick(candidate, PRICE_KEYS)
-    if price_value is None and offers:
-        price_value = _pick(offers, ("price", "lowPrice", "highPrice", "priceValue"))
-    price_min, price_max, price_currency = _parse_price(price_value, default_currency="INR")
-
-    area_sqft, area_sqm = _parse_area(_pick(candidate, AREA_KEYS))
-    bedrooms = _maybe_int(_pick(candidate, BHK_KEYS))
-    bathrooms = _maybe_int(_pick(candidate, BATH_KEYS))
-    price_per_sqft = _maybe_float(_pick(candidate, PRICE_PER_SQFT_KEYS))
-    property_type = _as_text(_pick(candidate, TYPE_KEYS))
-    listing_status = _as_text(_pick(candidate, STATUS_KEYS))
-    locality = _as_text(_pick(candidate, LOCALITY_KEYS))
-    city = _as_text(_pick(candidate, CITY_KEYS)) or city_label
-    latitude = _maybe_float(_pick(candidate, LAT_KEYS))
-    longitude = _maybe_float(_pick(candidate, LNG_KEYS))
-    amenities = _normalize_amenities(_pick(candidate, AMENITY_KEYS))
-    images = _extract_images(_pick(candidate, IMAGE_KEYS))
-    if not images and offers:
-        images = _extract_images(offers.get("image"))
-
-    record_id = _as_text(_pick(candidate, ID_KEYS))
-    if not record_id:
-        record_id = _stable_id(detail_url)
-
-    listing: dict[str, Any] = {
-        "id": record_id,
-        "title": title,
-        "price_min": price_min,
-        "price_max": price_max,
-        "price_currency": price_currency,
-        "price_per_sqft": price_per_sqft,
-        "area_sqft": area_sqft,
-        "area_sqm": area_sqm,
-        "bedrooms": bedrooms,
-        "bathrooms": bathrooms,
-        "property_type": property_type,
-        "listing_status": listing_status,
-        "city": city,
-        "city_slug": city_slug,
-        "locality": locality,
-        "latitude": latitude,
-        "longitude": longitude,
-        "detail_url": detail_url,
-        "amenities": amenities,
-        "images": images,
-        "listing_category": category,
-        "source": SOURCE_NAME,
-        "raw_listing": candidate,
+    type_map = {
+        "apartment": "apartment",
+        "flat": "apartment",
+        "villa": "villa",
+        "townhouse": "townhouse",
+        "duplex": "duplex",
+        "penthouse": "penthouse",
+        "studio": "studio",
+        "plot": "plot",
+        "land": "land",
+        "commercial": "commercial",
+        "office": "office",
+        "retail": "retail",
+        "shop": "retail",
+        "showroom": "showroom",
+        "warehouse": "warehouse",
+        "pg": "pg",
+        "co-living": "co-living",
     }
-    return {k: v for k, v in listing.items() if v not in (None, "", [])}
+
+    normalized: list[str] = []
+    for part in raw_parts:
+        mapped = None
+        for key, val in type_map.items():
+            if key in part:
+                mapped = val
+                break
+        normalized.append(mapped or part)
+    return list(dict.fromkeys(normalized))
 
 
-def _listing_from_jsonld(item: dict[str, Any], *, category: str, city_label: str, city_slug: str) -> dict[str, Any] | None:
-    candidate = dict(item)
-    if "item" in candidate and isinstance(candidate["item"], dict):
-        inner = candidate["item"]
-        candidate.update(inner)
-    if "offers" in candidate and isinstance(candidate["offers"], dict):
-        offers = candidate["offers"]
-        if "price" in offers and "price" not in candidate:
-            candidate["price"] = offers["price"]
-        if "priceCurrency" in offers and "price_currency" not in candidate:
-            candidate["price_currency"] = offers["priceCurrency"]
-    return _listing_from_candidate(candidate, category=category, city_label=city_label, city_slug=city_slug)
+def _type_from_category(category: str) -> list[str]:
+    mapping = {
+        "buy": ["residential"],
+        "rent": ["residential"],
+        "commercial": ["commercial"],
+        "pg": ["pg", "co-living"],
+        "plots": ["plot"],
+    }
+    return mapping.get(category, [category])
 
 
-def _extract_records_from_links(html_text: str, *, category: str, city_label: str, city_slug: str) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    pattern = re.compile(r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
-    for href, raw_text in pattern.findall(html_text):
-        detail_url = _normalize_url(href)
-        if not detail_url or not _looks_like_listing_link(detail_url, category):
+def _normalize_configurations(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_values = [str(v).strip() for v in value if str(v).strip()]
+    else:
+        text = _as_text(value)
+        if not text:
+            return []
+        raw_values = [part.strip() for part in re.split(r"[,;/|&+]", text) if part.strip()]
+
+    configurations: list[str] = []
+    for part in raw_values:
+        normalized = part.lower().replace(" ", "")
+        m_bhk = re.match(r"(\d+(?:\.\d+)?)bhk", normalized)
+        if m_bhk:
+            configurations.append(f"{m_bhk.group(1)}BHK")
             continue
-        text = re.sub(r"<[^>]+>", " ", raw_text)
-        text = html.unescape(text).replace("\xa0", " ")
-        text = re.sub(r"\s+", " ", text).strip()
-
-        title = text if not _is_generic_title(text) else _name_from_url(detail_url)
-        if _is_generic_title(title):
+        m_numeric = re.match(r"^\d+$", normalized)
+        if m_numeric:
+            configurations.append(f"{m_numeric.group(0)}BHK")
             continue
-
-        records.append(
-            {
-                "id": _stable_id(detail_url),
-                "title": title,
-                "detail_url": detail_url,
-                "city": city_label,
-                "city_slug": city_slug,
-                "listing_category": category,
-                "source": SOURCE_NAME,
-            }
-        )
-    return records
-
-
-def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: dict[str, dict[str, Any]] = {}
-    for record in records:
-        key = _as_text(record.get("id")) or _as_text(record.get("detail_url"))
-        if not key:
+        if "studio" in normalized:
+            configurations.append("Studio")
             continue
-        deduped[key] = record
-    return list(deduped.values())
-
-
-def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
-    missing = [field for field in MANDATORY_FIELDS if not _as_text(record.get(field))]
-    if missing:
-        raise ValueError(f"Missing mandatory fields: {', '.join(missing)}")
-
-    title = _as_text(record.get("title"))
-    if _is_generic_title(title):
-        raise ValueError("Generic title")
-
-    detail_url = _as_text(record.get("detail_url"))
-    if not detail_url or not _is_99acres_listing_url(detail_url):
-        raise ValueError("Invalid/non-99acres detail_url")
-
-    price_min = record.get("price_min")
-    price_max = record.get("price_max")
-    if isinstance(price_min, (int, float)) and isinstance(price_max, (int, float)) and price_min > price_max:
-        record["price_min"], record["price_max"] = int(price_max), int(price_min)
-
-    return {k: v for k, v in record.items() if v not in (None, "", [])}
-
-
-def parse_99acres_listing_page(
-    html_text: str,
-    *,
-    category: str = "buy",
-    city_label: str = "",
-    city_slug: str = "",
-) -> pd.DataFrame:
-    records: list[dict[str, Any]] = []
-
-    initial_data = _load_initial_data(html_text)
-    if initial_data:
-        for node in _iter_nodes(initial_data):
-            listing = _listing_from_candidate(node, category=category, city_label=city_label, city_slug=city_slug)
-            if listing:
-                records.append(listing)
-
-    if not records:
-        next_data = _load_next_data(html_text)
-        if next_data:
-            for node in _iter_nodes(next_data):
-                listing = _listing_from_candidate(node, category=category, city_label=city_label, city_slug=city_slug)
-                if listing:
-                    records.append(listing)
-
-    if not records:
-        for obj in _iter_jsonld_objects(html_text):
-            obj_type = str(obj.get("@type", "")).lower()
-            if obj_type == "itemlist":
-                for item in obj.get("itemListElement", []) or []:
-                    if isinstance(item, dict):
-                        listing = _listing_from_jsonld(item, category=category, city_label=city_label, city_slug=city_slug)
-                        if listing:
-                            records.append(listing)
+        if "rk" in normalized:
+            m_rk = re.search(r"(\d+)", normalized)
+            if m_rk:
+                configurations.append(f"{m_rk.group(1)}RK")
             else:
-                listing = _listing_from_jsonld(obj, category=category, city_label=city_label, city_slug=city_slug)
-                if listing:
-                    records.append(listing)
-
-    if not records:
-        records.extend(_extract_records_from_links(html_text, category=category, city_label=city_label, city_slug=city_slug))
-
-    if not records:
-        return pd.DataFrame()
-
-    validated: list[dict[str, Any]] = []
-    for record in _dedupe_records(records):
-        try:
-            validated.append(_validate_record(record))
-        except Exception:
+                configurations.append("RK")
             continue
-
-    if not validated:
-        return pd.DataFrame()
-    return pd.DataFrame.from_records(validated)
+        configurations.append(part)
+    return list(dict.fromkeys(configurations))
 
 
 def _normalize_possession_date(value: Any) -> str | None:
@@ -1324,6 +1061,316 @@ def _normalize_possession_date(value: Any) -> str | None:
     if m:
         return f"{m.group(1)}-01"
     return None
+
+
+def _extract_images(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        images = [str(v).strip() for v in value if str(v).strip()]
+        return images or None
+    text = _as_text(value)
+    if not text:
+        return None
+    return [text]
+
+
+def _is_generic_title(value: str | None) -> bool:
+    text = (value or "").strip().lower()
+    if not text:
+        return True
+    if len(text) < 3:
+        return True
+    if text in {"details", "view details", "read more", "project", "property", "buy", "rent"}:
+        return True
+    return any(token in text for token in GENERIC_TITLE_TOKENS)
+
+
+def _looks_like_listing_link(url: str, category: str) -> bool:
+    lowered = url.lower()
+    if not _is_housing_url(url):
+        return False
+    if re.search(r"[?&]page=", lowered):
+        return False
+    if re.search(r"/page-?\d+\b", lowered):
+        return False
+    if any(token in lowered for token in ("/login", "/contact", "/privacy", "/terms", "/news", "/guides")):
+        return False
+
+    parsed = urlparse(lowered)
+    segments = [part for part in parsed.path.strip("/").split("/") if part]
+    leaf = segments[-1] if segments else ""
+    if leaf in {"buy", "rent", "commercial", "pg", "plots", "search", "resale", "projects", "properties"}:
+        return False
+
+    if "-prjid-" in lowered or "/in/projects/" in lowered:
+        return True
+
+    if f"/in/{category}/" in lowered:
+        compact_leaf = re.sub(r"[^a-z0-9]", "", leaf)
+        if len(compact_leaf) >= 5 and "project" in lowered:
+            return True
+
+    return False
+
+
+def _stable_id(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()
+
+
+def _score_candidate_dict(item: dict[str, Any]) -> float:
+    if not isinstance(item, dict):
+        return 0.0
+    keyset = set(item.keys())
+    score = 0.0
+    if keyset & set(URL_KEYS):
+        score += 3.0
+    if keyset & set(TITLE_KEYS):
+        score += 2.0
+    if keyset & set(PRICE_KEYS):
+        score += 1.5
+    if keyset & set(ID_KEYS):
+        score += 1.0
+    if keyset & set(AREA_KEYS):
+        score += 1.0
+    if keyset & set(BHK_KEYS):
+        score += 1.0
+    return score
+
+
+def _listing_from_candidate(candidate: dict[str, Any], *, category: str, city_label: str, city_slug: str) -> dict[str, Any] | None:
+    if _score_candidate_dict(candidate) < 3.0:
+        return None
+
+    raw_url = _pick(candidate, URL_KEYS)
+    detail_url = _normalize_url(raw_url)
+    if not detail_url or not _is_housing_url(detail_url):
+        return None
+
+    title = _as_text(_pick(candidate, TITLE_KEYS)) or _name_from_url(detail_url)
+    if _is_generic_title(title):
+        return None
+
+    price_min, price_max, price_currency = _parse_price(_pick(candidate, PRICE_KEYS), default_currency="INR")
+    area_sqft, area_sqm = _parse_area(_pick(candidate, AREA_KEYS))
+    configurations = _normalize_configurations(_pick(candidate, CONFIG_KEYS))
+    property_types = _normalize_property_types(_pick(candidate, TYPE_KEYS))
+    if not property_types:
+        property_types = _type_from_category(category)
+
+    bedrooms = _maybe_int(_pick(candidate, BHK_KEYS))
+    bathrooms = _maybe_int(_pick(candidate, BATH_KEYS))
+    price_per_sqft = _maybe_float(_pick(candidate, PRICE_PER_SQFT_KEYS))
+    builder_name = _as_text(_pick(candidate, BUILDER_KEYS))
+    locality = _as_text(_pick(candidate, LOCALITY_KEYS))
+    city = _as_text(_pick(candidate, CITY_KEYS)) or city_label
+    listing_status = _as_text(_pick(candidate, STATUS_KEYS))
+    latitude = _maybe_float(_pick(candidate, LAT_KEYS))
+    longitude = _maybe_float(_pick(candidate, LNG_KEYS))
+    rera_number = _as_text(_pick(candidate, RERA_KEYS))
+    possession_date = _normalize_possession_date(_pick(candidate, POSSESSION_KEYS))
+    amenities = _normalize_amenities(_pick(candidate, AMENITY_KEYS))
+    images = _extract_images(_pick(candidate, IMAGE_KEYS))
+
+    record_id = _as_text(_pick(candidate, ID_KEYS))
+    if not record_id:
+        record_id = _stable_id(detail_url)
+
+    listing: dict[str, Any] = {
+        "id": record_id,
+        "title": title,
+        "builder_name": builder_name,
+        "price_min": price_min,
+        "price_max": price_max,
+        "price_currency": price_currency,
+        "price_per_sqft": price_per_sqft,
+        "area_sqft": area_sqft,
+        "area_sqm": area_sqm,
+        "bedrooms": bedrooms,
+        "bathrooms": bathrooms,
+        "property_types": property_types,
+        "configurations": configurations,
+        "listing_status": listing_status,
+        "city": city,
+        "city_slug": city_slug,
+        "locality": locality,
+        "latitude": latitude,
+        "longitude": longitude,
+        "detail_url": detail_url,
+        "rera_number": rera_number,
+        "possession_date": possession_date,
+        "amenities": amenities,
+        "images": images,
+        "listing_category": category,
+        "source": SOURCE_NAME,
+        "raw_listing": candidate,
+    }
+    return {k: v for k, v in listing.items() if v not in (None, "", [])}
+
+
+def _listing_from_jsonld(item: dict[str, Any], *, category: str, city_label: str, city_slug: str) -> dict[str, Any] | None:
+    candidate = dict(item)
+    if "item" in candidate and isinstance(candidate["item"], dict):
+        inner = candidate["item"]
+        candidate.update(inner)
+    if "offers" in candidate and isinstance(candidate["offers"], dict):
+        offers = candidate["offers"]
+        if "price" in offers and "price" not in candidate:
+            candidate["price"] = offers["price"]
+        if "priceCurrency" in offers and "price_currency" not in candidate:
+            candidate["price_currency"] = offers["priceCurrency"]
+    return _listing_from_candidate(candidate, category=category, city_label=city_label, city_slug=city_slug)
+
+
+def _extract_records_from_links(html_text: str, *, category: str, city_label: str, city_slug: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    pattern = re.compile(r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
+    for href, raw_text in pattern.findall(html_text):
+        detail_url = _normalize_url(href)
+        if not detail_url or not _looks_like_listing_link(detail_url, category):
+            continue
+        text = re.sub(r"<[^>]+>", " ", raw_text)
+        text = html.unescape(text).replace("\xa0", " ")
+        text = re.sub(r"\s+", " ", text).strip()
+
+        title = text if not _is_generic_title(text) else _name_from_url(detail_url)
+        if _is_generic_title(title):
+            continue
+
+        record = {
+            "id": _stable_id(detail_url),
+            "title": title,
+            "detail_url": detail_url,
+            "city": city_label,
+            "city_slug": city_slug,
+            "listing_category": category,
+            "property_types": _type_from_category(category),
+            "source": SOURCE_NAME,
+        }
+        records.append(record)
+    return records
+
+
+def _dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for record in records:
+        key = _as_text(record.get("id")) or _as_text(record.get("detail_url"))
+        if not key:
+            continue
+        deduped[key] = record
+    return list(deduped.values())
+
+
+def _merge_unique(existing: Any, incoming: Any) -> list[str]:
+    values: list[str] = []
+    for part in (existing or []):
+        text = _as_text(part)
+        if text and text not in values:
+            values.append(text)
+    for part in (incoming or []):
+        text = _as_text(part)
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _validate_record(record: dict[str, Any]) -> dict[str, Any]:
+    missing = [field for field in MANDATORY_FIELDS if not _as_text(record.get(field))]
+    if missing:
+        raise ValueError(f"Missing mandatory fields: {', '.join(missing)}")
+
+    title = _as_text(record.get("title"))
+    if _is_generic_title(title):
+        raise ValueError("Generic title")
+
+    detail_url = _as_text(record.get("detail_url"))
+    if not detail_url or not _is_housing_url(detail_url):
+        raise ValueError("Invalid/non-Housing detail_url")
+
+    price_min = record.get("price_min")
+    price_max = record.get("price_max")
+    if isinstance(price_min, (int, float)) and isinstance(price_max, (int, float)) and price_min > price_max:
+        record["price_min"], record["price_max"] = int(price_max), int(price_min)
+
+    return {key: value for key, value in record.items() if value not in (None, "", [])}
+
+
+def parse_housing_listing_page(
+    html_text: str,
+    *,
+    category: str = "buy",
+    city_label: str = "",
+    city_slug: str = "",
+) -> pd.DataFrame:
+    records: list[dict[str, Any]] = []
+
+    next_data = _load_next_data(html_text)
+    if next_data:
+        for node in _iter_nodes(next_data):
+            listing = _listing_from_candidate(node, category=category, city_label=city_label, city_slug=city_slug)
+            if listing:
+                records.append(listing)
+
+    if not records:
+        for obj in _iter_jsonld_objects(html_text):
+            obj_type = str(obj.get("@type", "")).lower()
+            if obj_type == "itemlist":
+                for item in obj.get("itemListElement", []) or []:
+                    if isinstance(item, dict):
+                        listing = _listing_from_jsonld(item, category=category, city_label=city_label, city_slug=city_slug)
+                        if listing:
+                            records.append(listing)
+            else:
+                listing = _listing_from_jsonld(obj, category=category, city_label=city_label, city_slug=city_slug)
+                if listing:
+                    records.append(listing)
+
+    if not records:
+        records.extend(_extract_records_from_links(html_text, category=category, city_label=city_label, city_slug=city_slug))
+
+    if not records:
+        return pd.DataFrame()
+
+    validated: list[dict[str, Any]] = []
+    for record in _dedupe_records(records):
+        try:
+            validated.append(_validate_record(record))
+        except Exception:
+            continue
+
+    if not validated:
+        return pd.DataFrame()
+    return pd.DataFrame.from_records(validated)
+
+
+def _score_detail_dict(item: dict[str, Any]) -> float:
+    if not isinstance(item, dict):
+        return 0.0
+    keyset = set(item.keys())
+    score = 0.0
+    for key in ("description", "amenities", "features", "address", "location"):
+        if key in keyset:
+            score += 1.0
+    for key in ("price", "priceRange", "images", "gallery", "projectName"):
+        if key in keyset:
+            score += 1.0
+    for key in ("bhk", "bedrooms", "bathrooms", "area", "propertyType"):
+        if key in keyset:
+            score += 0.5
+    if keyset & set(URL_KEYS):
+        score += 0.5
+    return score
+
+
+def _find_best_detail(payload: dict[str, Any]) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_score = 0.0
+    for node in _iter_nodes(payload):
+        score = _score_detail_dict(node)
+        if score > best_score:
+            best_score = score
+            best = node
+    return best
 
 
 def _extract_meta_map(html_text: str) -> dict[str, str]:
@@ -1393,36 +1440,6 @@ def _to_epoch_and_iso(value: Any) -> tuple[int | None, str | None]:
         return None, None
 
 
-def _score_detail_dict(item: dict[str, Any]) -> float:
-    if not isinstance(item, dict):
-        return 0.0
-    keyset = set(item.keys())
-    score = 0.0
-    for key in ("description", "amenities", "features", "address", "location"):
-        if key in keyset:
-            score += 1.0
-    for key in ("price", "priceRange", "images", "gallery", "projectName"):
-        if key in keyset:
-            score += 1.0
-    for key in ("bhk", "bedrooms", "bathrooms", "area", "propertyType"):
-        if key in keyset:
-            score += 0.5
-    if keyset & set(URL_KEYS):
-        score += 0.5
-    return score
-
-
-def _find_best_detail(payload: dict[str, Any]) -> dict[str, Any] | None:
-    best: dict[str, Any] | None = None
-    best_score = 0.0
-    for node in _iter_nodes(payload):
-        score = _score_detail_dict(node)
-        if score > best_score:
-            best_score = score
-            best = node
-    return best
-
-
 def _detail_from_jsonld(obj: dict[str, Any]) -> dict[str, Any]:
     offers = obj.get("offers") if isinstance(obj.get("offers"), dict) else {}
     price_value = offers.get("price") if offers else None
@@ -1455,6 +1472,7 @@ def _detail_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
     detail: dict[str, Any] = {
         "detail_title": _as_text(_pick(candidate, TITLE_KEYS)),
+        "detail_builder_name": _as_text(_pick(candidate, BUILDER_KEYS)),
         "detail_price_min": price_min,
         "detail_price_max": price_max,
         "detail_price_currency": price_currency,
@@ -1463,8 +1481,8 @@ def _detail_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "detail_area_sqm": area_sqm,
         "detail_bedrooms": _maybe_int(_pick(candidate, BHK_KEYS)),
         "detail_bathrooms": _maybe_int(_pick(candidate, BATH_KEYS)),
-        "detail_property_type": _as_text(_pick(candidate, TYPE_KEYS)),
-        "detail_status": _as_text(_pick(candidate, STATUS_KEYS)),
+        "detail_property_types": _normalize_property_types(_pick(candidate, TYPE_KEYS)),
+        "detail_configurations": _normalize_configurations(_pick(candidate, CONFIG_KEYS)),
         "detail_locality": _as_text(_pick(candidate, LOCALITY_KEYS)),
         "detail_city": _as_text(_pick(candidate, CITY_KEYS)),
         "detail_latitude": _maybe_float(_pick(candidate, LAT_KEYS)),
@@ -1485,7 +1503,7 @@ def _detail_from_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in detail.items() if v not in (None, "", [])}
 
 
-def parse_99acres_detail_page(html_text: str) -> dict[str, Any]:
+def parse_housing_detail_page(html_text: str) -> dict[str, Any]:
     detail: dict[str, Any] = {}
 
     for obj in _iter_jsonld_objects(html_text):
@@ -1494,9 +1512,9 @@ def parse_99acres_detail_page(html_text: str) -> dict[str, Any]:
             detail.update(_detail_from_jsonld(obj))
             break
 
-    payload = _load_initial_data(html_text) or _load_next_data(html_text)
-    if payload:
-        best = _find_best_detail(payload)
+    next_data = _load_next_data(html_text)
+    if next_data:
+        best = _find_best_detail(next_data)
         if isinstance(best, dict):
             detail.update(_detail_from_candidate(best))
             detail["detail_raw"] = best
@@ -1536,6 +1554,8 @@ def _merge_detail_payload(record: dict[str, Any], detail: dict[str, Any]) -> dic
 
     if not record.get("title") and detail.get("detail_title"):
         record["title"] = detail["detail_title"]
+    if not record.get("builder_name") and detail.get("detail_builder_name"):
+        record["builder_name"] = detail["detail_builder_name"]
     if record.get("price_min") is None and detail.get("detail_price_min") is not None:
         record["price_min"] = detail["detail_price_min"]
     if record.get("price_max") is None and detail.get("detail_price_max") is not None:
@@ -1555,10 +1575,11 @@ def _merge_detail_payload(record: dict[str, Any], detail: dict[str, Any]) -> dic
     if record.get("bathrooms") is None and detail.get("detail_bathrooms") is not None:
         record["bathrooms"] = detail["detail_bathrooms"]
 
-    if not record.get("property_type") and detail.get("detail_property_type"):
-        record["property_type"] = detail["detail_property_type"]
-    if not record.get("listing_status") and detail.get("detail_status"):
-        record["listing_status"] = detail["detail_status"]
+    if detail.get("detail_property_types"):
+        record["property_types"] = _merge_unique(record.get("property_types"), detail.get("detail_property_types"))
+    if detail.get("detail_configurations"):
+        record["configurations"] = _merge_unique(record.get("configurations"), detail.get("detail_configurations"))
+
     if not record.get("locality") and detail.get("detail_locality"):
         record["locality"] = detail["detail_locality"]
     if not record.get("city") and detail.get("detail_city"):
@@ -1619,7 +1640,7 @@ def df_to_actions(df: pd.DataFrame, default_index: str | None) -> Iterable[dict[
     for record in clean.to_dict(orient="records"):
         target_index = record.pop("_target_index", None) or default_index
         if not target_index:
-            raise ValueError("Missing target index for 99acres document")
+            raise ValueError("Missing target index for Housing.com document")
         doc_id = _as_text(record.get("id"))
         if not doc_id:
             continue
@@ -1634,14 +1655,14 @@ def df_to_actions(df: pd.DataFrame, default_index: str | None) -> Iterable[dict[
 async def _fetch_detail_with_retry(
     client: HttpClient,
     url: str | None,
-    base_settings: Acres99BaseSettings,
+    base_settings: HousingBaseSettings,
 ) -> dict[str, Any]:
     if not url:
         return {}
     for attempt in range(base_settings.detail_retry_count):
         try:
             html_text = _fetch(client, url, retries=2, base_settings=base_settings)
-            detail = parse_99acres_detail_page(html_text)
+            detail = parse_housing_detail_page(html_text)
             if detail:
                 return detail
         except Exception as exc:  # pragma: no cover - observability
@@ -1656,7 +1677,7 @@ async def _fetch_detail_with_retry(
     return {}
 
 
-def _job_output_dir(base_dir: Path, job: Acres99JobSettings) -> Path:
+def _job_output_dir(base_dir: Path, job: HousingJobSettings) -> Path:
     out_dir = base_dir / job.category / job.city_slug
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
@@ -1665,9 +1686,9 @@ def _job_output_dir(base_dir: Path, job: Acres99JobSettings) -> Path:
 async def _scrape_job(
     client: HttpClient,
     es: Elasticsearch,
-    job: Acres99JobSettings,
+    job: HousingJobSettings,
     *,
-    base_settings: Acres99BaseSettings | None = None,
+    base_settings: HousingBaseSettings | None = None,
 ) -> list[dict[str, Any]]:
     settings = base_settings or BASE_SETTINGS
     ensure_index(es, job.es_index)
@@ -1677,10 +1698,10 @@ async def _scrape_job(
 
     for page in range(1, job.pages + 1):
         url = _build_listing_page_url(job, page)
-        logger.info("Fetching 99acres %s listing page %s", job.name, url)
-        listing_html = _fetch(client, url, retries=3, base_settings=settings)
+        logger.info("Fetching Housing.com %s listing page %s", job.name, url)
+        listing_html = _fetch(client, url, retries=2, base_settings=settings)
 
-        df = parse_99acres_listing_page(
+        df = parse_housing_listing_page(
             listing_html,
             category=job.category,
             city_label=job.city_label,
@@ -1689,7 +1710,7 @@ async def _scrape_job(
         if df.empty:
             logger.info("No %s listings parsed from page %s, stopping job.", job.name, page)
             break
-        logger.info("Parsed %d 99acres %s listings from page %d", len(df), job.name, page)
+        logger.info("Parsed %d Housing.com %s listings from page %d", len(df), job.name, page)
 
         for record in df.to_dict(orient="records"):
             record.setdefault("listing_category", job.category)
@@ -1710,7 +1731,7 @@ async def _scrape_job(
             try:
                 validated = _validate_record(record)
             except Exception as exc:
-                logger.debug("Skipping invalid 99acres record (%s): %s", job.name, exc)
+                logger.debug("Skipping invalid housing record (%s): %s", job.name, exc)
                 continue
 
             validated["_target_index"] = job.es_index
@@ -1730,12 +1751,12 @@ async def _scrape_job(
 
 
 @task
-async def acres99_property_data() -> None:
+async def housing_property_data() -> None:
     if not BASE_SETTINGS.enabled:
-        logger.info("99acres scraper disabled via config. Skipping run.")
+        logger.info("Housing.com scraper disabled via config. Skipping run.")
         return
     if not JOB_SETTINGS:
-        raise ValueError("No 99acres job settings available")
+        raise ValueError("No Housing.com job settings available")
 
     BASE_SETTINGS.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1748,18 +1769,18 @@ async def acres99_property_data() -> None:
         try:
             job_rows = await _scrape_job(client, es, job, base_settings=BASE_SETTINGS)
         except Exception as exc:
-            logger.exception("99acres job failed for %s: %s", job.name, exc)
+            logger.exception("Housing.com job failed for %s: %s", job.name, exc)
             continue
 
         if not job_rows:
-            logger.info("No rows collected for 99acres job %s", job.name)
+            logger.info("No rows collected for Housing.com job %s", job.name)
             continue
 
         job_df = pd.DataFrame(job_rows)
         dedupe_keys = ["id", "listing_category", "city_slug"]
         job_df = job_df.drop_duplicates(subset=dedupe_keys, keep="last").reset_index(drop=True)
 
-        logger.info("Indexing %d 99acres %s documents into ES index %s", len(job_df), job.name, job.es_index)
+        logger.info("Indexing %d Housing.com %s documents into ES index %s", len(job_df), job.name, job.es_index)
         bulk_resp = helpers.bulk(
             es,
             df_to_actions(job_df, default_index=None),
@@ -1768,18 +1789,18 @@ async def acres99_property_data() -> None:
             raise_on_error=False,
             raise_on_exception=False,
         )
-        logger.info("ES bulk response for 99acres job %s: %s", job.name, bulk_resp)
+        logger.info("ES bulk response for Housing.com job %s: %s", job.name, bulk_resp)
 
         all_rows.extend(job_rows)
 
     final_df = pd.DataFrame(all_rows)
     if final_df.empty:
-        raise ValueError("No 99acres records collected across configured jobs")
+        raise ValueError("No Housing.com records collected across configured jobs")
 
     dedupe_keys = ["id", "listing_category", "city_slug"]
     final_df = final_df.drop_duplicates(subset=dedupe_keys, keep="last").reset_index(drop=True)
 
-    out_json = Path("acres99_listings.json")
+    out_json = Path("housing_listings.json")
     json_df = final_df.drop(columns=["_target_index"], errors="ignore")
     json_df.to_json(out_json, orient="records", force_ascii=True)
     logger.info("Wrote %s with %d rows", out_json, len(json_df))
@@ -1798,9 +1819,9 @@ def fetch_all_docs(es: Elasticsearch, index: str, fields: list[str] | None = Non
 
 
 @task
-async def export_acres99_json_to_r2() -> None:
+async def export_housing_json_to_r2() -> None:
     if not BASE_SETTINGS.enabled:
-        logger.info("99acres export disabled because scraper is disabled.")
+        logger.info("Housing.com export disabled because scraper is disabled.")
         return
 
     cloudflare_config = config["cloudflare"]
@@ -1815,10 +1836,10 @@ async def export_acres99_json_to_r2() -> None:
         rows.extend(fetch_all_docs(es, index))
 
     if not rows:
-        raise SystemExit("No 99acres documents returned from ES.")
+        raise SystemExit("No Housing.com documents returned from ES.")
 
     df = pd.DataFrame.from_records(rows)
-    out_path = Path("acres99_listings.json")
+    out_path = Path("housing_listings.json")
     df.to_json(out_path, orient="records", force_ascii=True)
     logger.info("Wrote %s with %d rows and %d columns", out_path, len(df), len(df.columns))
 
@@ -1834,7 +1855,7 @@ async def export_acres99_json_to_r2() -> None:
     if not bucket:
         raise KeyError("Missing PROP_BUCKET/BUCKET configuration for Cloudflare export")
 
-    key = "data/acres99_listings.json"
+    key = "data/housing_listings.json"
     s3.upload_file(
         Filename=str(out_path),
         Bucket=bucket,
@@ -1849,14 +1870,14 @@ async def export_acres99_json_to_r2() -> None:
 
 
 register_pipeline(
-    id="acres99_pipeline",
-    description="Scrape 99acres listings across categories/cities and export snapshots.",
-    tasks=[acres99_property_data, export_acres99_json_to_r2],
+    id="housing_pipeline",
+    description="Scrape Housing.com listings across categories/cities and export snapshots.",
+    tasks=[housing_property_data, export_housing_json_to_r2],
     triggers=[
         Trigger(
-            id="acres99_daily",
-            name="99acres Daily",
-            description="Run 99acres scraper daily",
+            id="housing_daily",
+            name="Housing Daily",
+            description="Run Housing.com scraper daily",
             params=InputParams(),
             schedule=CronTrigger(
                 hour=BASE_SETTINGS.schedule_hour,

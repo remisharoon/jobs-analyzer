@@ -1,11 +1,15 @@
 import pytest
+from unittest.mock import patch
 
-from kochi_launches_pipeline import (
+from property_launches_pipeline import (
     _parse_price,
     _parse_area,
     _normalize_configurations,
     _normalize_property_types,
     _normalize_amenities,
+    _normalize_possession_date,
+    _normalize_launch_status,
+    _extract_possession_metadata_from_text,
     _generate_project_id,
     _normalize_scalar,
     _as_text,
@@ -117,6 +121,39 @@ class TestNormalizeConfigurations:
         assert _normalize_configurations("") == []
 
 
+class TestNormalizePossessionDate:
+    def test_month_year(self):
+        assert _normalize_possession_date("Dec 2028") == "2028-12"
+
+    def test_html_entity_spacing(self):
+        assert _normalize_possession_date("Sep&nbsp;2022") == "2022-09"
+
+    def test_quarter_format(self):
+        assert _normalize_possession_date("Q3 2027") == "2027-09"
+
+    def test_ready_to_move_returns_none(self):
+        assert _normalize_possession_date("Ready to Move") is None
+
+
+class TestNormalizeLaunchStatus:
+    def test_ready_variants(self):
+        assert _normalize_launch_status("Ready to Move") == "ready-to-move"
+        assert _normalize_launch_status("ready_for_occupancy") == "ready-to-move"
+
+    def test_known_statuses(self):
+        assert _normalize_launch_status("Under Construction") == "under-construction"
+        assert _normalize_launch_status("Pre Launch") == "pre-launch"
+
+
+class TestExtractPossessionMetadata:
+    def test_extract_possession_and_status(self):
+        text = "Project details: Possession Sep 2022 and Possession Status Ready to Move"
+        out = _extract_possession_metadata_from_text(text, source="detail_regex")
+        assert out["possession_date"] == "2022-09"
+        assert out["launch_status"] == "ready-to-move"
+        assert out["possession_source"] == "detail_regex"
+
+
 class TestNormalizePropertyTypes:
     def test_apartment(self):
         assert _normalize_property_types("Apartment") == ["apartment"]
@@ -183,6 +220,14 @@ class TestGenerateProjectId:
         id2 = _generate_project_id("Prestige Dolphins Court", "Prestige Group")
         assert id1 == id2
 
+    def test_city_aware_id_changes(self):
+        with patch("property_launches_pipeline.SETTINGS") as mock_settings:
+            mock_settings.city_key = "kochi"
+            kochi_id = _generate_project_id("Prestige Dolphins Court", "Prestige Group")
+            mock_settings.city_key = "bengaluru"
+            bengaluru_id = _generate_project_id("Prestige Dolphins Court", "Prestige Group")
+        assert kochi_id != bengaluru_id
+
 
 class TestNormalizeProjectRecord:
     def test_full_record(self, sample_project_record):
@@ -191,6 +236,8 @@ class TestNormalizeProjectRecord:
         assert record["builder_name"] == "Prestige Group"
         assert record["city"] == "Kochi"
         assert record["state"] == "Kerala"
+        assert record["target_city_key"] == "kochi"
+        assert record["target_city"] == "Kochi"
         assert record["id"] is not None
         assert record["discovered_at"] is not None
         assert record["updated_at"] is not None
@@ -201,6 +248,8 @@ class TestNormalizeProjectRecord:
         assert record["builder_name"] == "Unknown"
         assert record["city"] == "Kochi"
         assert record["state"] == "Kerala"
+        assert record["target_city_key"] == "kochi"
+        assert record["target_city"] == "Kochi"
         assert record["launch_status"] == "new-launch"
         assert record["price_currency"] == "INR"
 
@@ -218,6 +267,18 @@ class TestNormalizeProjectRecord:
             sample_project_record["project_name"],
             sample_project_record["builder_name"],
         )
+
+    def test_respects_explicit_target_city_key(self):
+        record = normalize_project_record({
+            "project_name": "Cross City Project",
+            "builder_name": "Builder",
+            "target_city_key": "bengaluru",
+            "target_city": "Bengaluru",
+            "city": "Bengaluru",
+            "state": "Karnataka",
+        })
+        assert record["target_city_key"] == "bengaluru"
+        assert record["target_city"] == "Bengaluru"
 
     def test_discovered_at_preserved(self, sample_project_record):
         sample_project_record["discovered_at"] = "2025-01-15T00:00:00+00:00"
